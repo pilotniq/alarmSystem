@@ -1,0 +1,103 @@
+<html>
+  <heaitd>
+    <title>Mästarbacken Control Panel</title>
+    <script type="text/javascript">
+      var ws;
+      
+      reconnect();
+
+      function reconnect()
+      {
+        ws = new WebSocket('ws://hallen.local/websocket')
+
+        console.log( "Reconnecting..." );
+      
+        ws.onopen = function() {
+          console.log( "Websocket connection opened." );
+        };
+
+      ws.onmessage = function (evt) {
+        var text_msg = evt.data;
+        console.log("Message is received...:" + text_msg);
+      
+        msg = JSON.parse( text_msg );
+        switch( msg.type )
+        {
+          case 'stateChange':
+            setState( msg.state );
+            state = msg.state;
+            
+            break;
+
+          default:
+            console.log( "ERROR: Unknown message type " + msg.type );
+        }
+      };
+
+        ws.onclose = function() {
+          // websocket is closed.
+          console.log("Websocket connection is closed...");
+          setState( "disconnected" );
+          reconnect();
+         // var ws = new WebSocket('ws://hallen.local/websocket')
+        };
+      }
+      
+      function setState( newState )
+      {
+        document.getElementById("state").innerHTML = newState;
+
+        switch( newState )
+        {
+         case "disconnected":
+            document.getElementById("armButton").style.display = "none";
+            document.getElementById("disarmButton").style.display = "none";
+            break;
+      
+          case "disarmed":
+            document.getElementById("armButton").style.display = "inline-block";
+            document.getElementById("disarmButton").style.display = "none";
+            break;
+
+          case "preTrigger":
+          case "armed":
+            document.getElementById("armButton").style.display = "none";
+            document.getElementById("disarmButton").style.display = "inline-block";
+            break;
+      
+          case "triggered":
+            document.getElementById("armButton").style.display = "inline-block";
+            document.getElementById("disarmButton").style.display = "inline-block";
+            break;
+      
+          default:
+            alert("Invalid state: " + newState );
+        }
+      }
+
+      function arm()
+      {
+        ws.send("arm");
+      }
+      
+      function disarm()
+      {
+        ws.send("disarm");
+      }
+
+      function trigger()
+      {
+        ws.send( "trigger" );
+      }
+    </script>
+  </head>
+  <body>
+    <h1>Mästarbacken Control Panel</h1>
+    
+    <p>State:<span id=state></span></p>
+    
+    <button id="triggerButton" type="button" style="display:none;height:10vh;width:80%" onClick="trigger()">Trigger</button>
+    <button id="armButton" type="button" style="display:none;height:10vh;width:80%" onClick="arm()">Arm</button>
+    <button id="disarmButton" type="button" style="display:inline-block;height:10vh;width:80%" onClick="disarm()">Disarm</button>
+  </body>
+</html>

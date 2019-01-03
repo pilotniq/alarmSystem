@@ -1,0 +1,15 @@
+time raspistill --nopreview --awb off --exposure nightpreview --ISO 800 -t 1 --shutter 6000000 -o test-manual-800-6s-awb-none-nightpreview.jp
+
+Take photo with default settings:
+
+raspistill --nopreview --awb incandescent --exposure verylong --ISO 800 -t 1000 -q 10 -o test-verylong-t1s-q10.jpg
+
+Then extract Ljusstyrka from EXIF (Light Value?).
+
+If Light Value is less than some threshold (1? 10?) then manually set shutter speed with -ss in microseconds to a speed above 180 us. Doubling time doubles EV. Max exposure time is 6s (6000000 us). Time to take a picture is about 7 times the exposure time.
+
+Exporesure time / Ljusstyrka / realtime
+1s 0,09 6s rt
+2s 0,26 15s rt
+4s 0,55 29s rt
+6s 0,84 43s rt
