@@ -60,7 +60,9 @@
             break;
 
           case "preTrigger":
+          case "waitForArm":
           case "armed":
+          case "waitForDisarm":
             document.getElementById("armButton").style.display = "none";
             document.getElementById("disarmButton").style.display = "inline-block";
             break;

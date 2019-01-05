@@ -8,6 +8,7 @@ const fs = require('fs');
 var moment = require('moment');
 var request = require('request');
 var exif = require('fast-exif');
+var semaphore = require('semaphore')
 
 const { exec } = require('child_process');
 const {google} = require('googleapis');
@@ -24,7 +25,7 @@ const app = express()
 //   houseName
 
 const secrets = JSON.parse(fs.readFileSync('secrets.json', 'utf8'));
-console.log( "Read secrets" );
+log( "Read secrets" );
 
 const oauth2Client = new google.auth.OAuth2(
     secrets.googlePhotosClientID,
@@ -50,7 +51,7 @@ const url = oauth2Client.generateAuthUrl({
     prompt: 'consent'
 });
 
-console.log( "Google Authorization URL: " + url );
+log( "Google Authorization URL: " + url );
 
 // This will provide an object with the access_token and refresh_token.
 // Save these somewhere safe so they can be used at a later time.
@@ -65,17 +66,17 @@ google.options({auth: oauth2Client});
 
 googleTokens = loadTokens()
 
-console.log( "googleTokens loadad: " + JSON.stringify( googleTokens ) );
+log( "googleTokens loadad: " + JSON.stringify( googleTokens ) );
 
 oauth2Client.on('tokens', (tokens) => {
-    console.log( "on tokens callback." );
+    log( "on tokens callback." );
     if (tokens.refresh_token) {
 	googleTokens.refresh_token = tokens.refresh_token;
 	// store the refresh_token in my database!
-	console.log("refresh token: '" + tokens.refresh_token + "'");
+	log("refresh token: '" + tokens.refresh_token + "'");
     }
     googleTokens.access_token = tokens.access_token;
-    console.log( "access token: '" + tokens.access_token + "'");
+    log( "access token: '" + tokens.access_token + "'");
     saveTokens( googleTokens );
 });
 
@@ -84,14 +85,14 @@ if( googleTokens )
     oauth2Client.setCredentials( googleTokens );
     oauth2Client.refreshAccessToken();
     
-    console.log( "Set credentials to saved tokens" );
+    log( "Set credentials to saved tokens" );
 }
 else
 {
     oauth2Client.getToken( googlePhotosAuthorizationCode ).then( function( r, err ) {
     if( err )
     {
-	console.log( "Error getting tokens: " + err );
+	log( "Error getting tokens: " + err );
 	return;
     }
     // print tokens fields
@@ -106,24 +107,24 @@ else
 
     saveTokens( googleTokens );
     
-    console.log( "tokens=" + tokens );
+    log( "tokens=" + tokens );
     printAttributes( tokens.tokens );
     
-    console.log( "res=" + r.res );
+    log( "res=" + r.res );
     printAttributes( r.res );
     
     if( tokens.access_token )
-	console.log( "Access token: " + tokens.access_token );
+	log( "Access token: " + tokens.access_token );
     else
-	console.log( "No access token" );
+	log( "No access token" );
     
     if( tokens.refresh_token) 
-	console.log( "Refresh token: " + tokens.refresh_token );
+	log( "Refresh token: " + tokens.refresh_token );
 
      // create album unless it has been created
     if( !secrets.googlePhotosAlbumID )
       createAlbum( secrets.houseName + " Alarms" );
-} ).catch( function( err ) { console.log( "Error getting tokens: " + err ); });
+} ).catch( function( err ) { log( "Error getting tokens: " + err ); });
 }
 
 setTimeout( refreshTokens, 45 * 60 * 1000 );
@@ -131,7 +132,11 @@ setTimeout( refreshTokens, 45 * 60 * 1000 );
 app.use(express.static('public'))
 // websockets
 var expressWs = require('express-ws')(app);
-var StatesEnum = { 'disarmed': 'disarmed', 'armed': 'armed', 'preTrigger': 'preTrigger',
+var StatesEnum = { 'disarmed': 'disarmed',
+		   'waitForArm': 'waitForArm',
+		   'armed': 'armed',
+		   'preTrigger': 'preTrigger',
+		   'waitForDisarm': 'waitForDisarm',
 		   'triggered': 'triggered' }
 var DimmingStatesEnum = { 'fixedBright': 'fixedBright', 'bright': 'bright', 'dimming': 'dimming',
 			  'dimmed': 'dimmed', 'brightning' : 'brightning' }
@@ -146,23 +151,32 @@ var screenBrightness = maxBrightness;
 var brighteningIntervalMilliseconds = 50;
 var brightnessTimer;
 
-var preTriggerTimer, triggeredTimer;
+var waitForArmTimer, preTriggerTimer, waitForDisarmTimer, triggeredTimer;
 const preTriggerTimeSeconds = 30; // two motion detections in 30 seconds triggers alarm. Only one is forgotten
 const maxTriggeredTimeSeconds = 60;
+const waitForDisarmMaxTimeSeconds = 2 * 60;
+const waitForArmTimeSeconds = 60;
+
 var nextImageTimer;
 
 // camera state
 var shutterTime = 0 // 0 = auto
 // lower brightnesses will give darker pictures but shorter exposure times
-var minCameraBrightness = 0.5
-var maxCameraBrightness = 1.0
+const minCameraBrightness = 0.125
+const targetCameraBrightness = 0.2
+const maxCameraBrightness = 0.25
+const photoDifferenceUploadThreshold = 0.995
+// contains filename of previous photo taken
+// will be compared against new photo. If difference is large enough, upload.
+var prevPhotoFilename
+var compareSemaphore = semaphore(1); // at most one compare process. Want to compare against latest uploaded.
 
 app.ws( '/websocket', function( ws, req ) {
     ws.on( 'message', function( msg ) {
 	switch( msg )
 	{
 	    case "arm":
-	      setState( StatesEnum.armed );
+	      setState( StatesEnum.waitForArm );
 	      break;
 	    
 	    case "disarm":
@@ -174,7 +188,7 @@ app.ws( '/websocket', function( ws, req ) {
 	      break;
 	    
 	    default:
-	      console.log( "Got unknown message: " + msg + ", ignoring");
+	      log( "Got unknown message: " + msg + ", ignoring");
 	}
     })
     sendStateToClient( ws, state );
@@ -184,7 +198,7 @@ app.get('/rearm', (req, res) => {
     setState( StatesEnum.armed );
     res.send('Armed.');
 })
-app.listen(port, () => console.log(`Example app listening on port ${port}!`))
+app.listen(port, () => log(`Example app listening on port ${port}!`))
 
 var motionPin = new onoff.Gpio(17, 'in', 'both')
 
@@ -197,7 +211,7 @@ motionPin.watch( function(err, value) {
 	return
     }
 
-    console.log( "Motion: got value " + value );
+    log( "Motion: got value " + value );
     if( value == 1 )
     {
 	switch( dimmingState )
@@ -206,7 +220,7 @@ motionPin.watch( function(err, value) {
 	      // reset dimming timer
 	      clearTimeout( brightnessTimer );
 	      brightnessTimer = setTimeout( dimScreen, timeUntilDimmingSeconds * 1000 )
-	      console.log( "Screen: Resetting timer to dim screen" );
+	      log( "Screen: Resetting timer to dim screen" );
 	      break;
 	    
 	    case DimmingStatesEnum.brightening:
@@ -216,32 +230,32 @@ motionPin.watch( function(err, value) {
 	      clearTimeout( brightnessTimer );
 	      brightnessTimer = setTimeout( brightenScreen, brighteningIntervalMilliseconds );
 	      dimmingState = DimmingStatesEnum.brightening;
-	      console.log( "Screen: Change from dimming to brightening" );
+	      log( "Screen: Change from dimming to brightening" );
 	      break;
 
 	    case DimmingStatesEnum.dimmed:
 	      dimmingState = DimmingStatesEnum.brightening;
 	      brightnessTimer = setTimeout( brightenScreen, brighteningIntervalMilliseconds );
-	      console.log( "Screen: Start brightening" );
+	      log( "Screen: Start brightening" );
 	      break;
 
 	    default:
-	      console.log( "Invalid DimmingState: " + dimmingState );
+	      log( "Invalid DimmingState: " + dimmingState );
 	}
 	//check if alarm should be triggered
-	console.log( "Motion: state=" + state );
+	log( "Motion: state=" + state );
 	
 	switch( state )
 	{
 	  case StatesEnum.preTrigger:
-	    console.log( "Pretriggered and got motion, trigger alarm" );
+	    log( "Pretriggered and got motion, go into waitForDisarm mode" );
 	    // cancel pretrigger timer
 	    clearTimeout( preTriggerTimer );
-	    setState( StatesEnum.triggered );
+	    setState( StatesEnum.waitForDisarm );
 	    break;
 	    
 	  case StatesEnum.armed:
-	    console.log( "Armed and got motion, go to pretriggered");
+	    log( "Armed and got motion, go to pretriggered");
 	    setState( StatesEnum.preTrigger );
 	    break;
 	}
@@ -250,26 +264,45 @@ motionPin.watch( function(err, value) {
 
 function setState( newState )
 {
-    console.log( "setState( '" + newState + "' ) entry" );
+    log( "setState( '" + newState + "' ) entry" );
 
     switch( state )
     {
+	case StatesEnum.waitForArm:
+	  clearTimeout( waitForArmTimer );
+	  break;
+	
+	case StatesEnum.preTrigger:
+	  clearTimeout( preTriggerTimer );
+	  break;
+	
+	case StatesEnum.waitForDisarm:
+	  clearTimeout( waitForDisarmTimer );
+	  break;
+	
 	case StatesEnum.triggered:
 	  // if we're leaving triggered state, restore screen brightness to normal max, set timer
-	  // for dimming
+	  // for dimming.
 	  setDimmingState( DimmingStatesEnum.bright );
-	  break;
+	  clearTimeout( triggeredTimer );
+	break;
+
     }
     
     state = newState;
     wss = expressWs.getWss();
     clients = wss.clients;
-    console.log( "wss=" + wss );
-    console.log( "clients=" + clients );
-    console.log( clients.size + " clients" );
+    log( "wss=" + wss );
+    log( "clients=" + clients );
+    log( clients.size + " clients" );
 
     switch( newState )
     {
+	case StatesEnum.waitForArm:
+	  setDimmingState( DimmingStatesEnum.bright );
+	  waitForArmTimer = setTimeout( arm, waitForArmTimeSeconds * 1000 );
+	  break;
+	
 	case StatesEnum.armed:
 	  // When going from pretriggered to armed, 
 	  setDimmingState( DimmingStatesEnum.bright );
@@ -281,6 +314,11 @@ function setState( newState )
 	  setDimmingState( DimmingStatesEnum.fixedBright )
 	  startImageCapture();
 	  preTriggerTimer = setTimeout( deTrigger, preTriggerTimeSeconds * 1000 );
+	  break;
+
+	case StatesEnum.waitForDisarm:
+	  setDimmingState( DimmingStatesEnum.fixedBright )
+	  waitForDisarmTimer = setTimeout( trigger, waitForDisarmMaxTimeSeconds * 1000 );
 	  break;
 	
 	case StatesEnum.triggered:
@@ -296,22 +334,22 @@ function setState( newState )
 			 if (err) {
 			     return console.error('pushover notification failed:', err);
 			 }
-			 console.log('Notification successful!  Server responded with:', body);
+			 log('Notification successful!  Server responded with:', body);
 		     });
 	
 	  // start capturing images. Send to Google?
-	  console.log( "Calling startImageCapture" );
+	  log( "Calling startImageCapture" );
 
 	  setDimmingState( DimmingStatesEnum.fixedBright )
 
-	  triggeredTimer = setTimeout( rearm, maxTriggeredTimeSeconds * 1000 );
+	  triggeredTimer = setTimeout( arm, maxTriggeredTimeSeconds * 1000 );
 	  // image capture should already be in progress from pretrigger
 	  // startImageCapture();
 	  break;
     }
 
     clients.forEach( function( client ) { 
-	console.log( "Sending state to client" );
+	log( "Sending state to client" );
 	sendStateToClient( client, state );
     });
 }
@@ -322,20 +360,25 @@ function deTrigger()
     setState( StatesEnum.armed );
 }
 
+function trigger()
+{
+    setState( StatesEnum.triggered );
+}
+
 function printAttributes( o )
 {
     var propValue;
     for(var propName in o) {
 	propValue = o[propName]
 
-	console.log(propName + " = " + propValue);
+	log(propName + " = " + propValue);
     }
 }
 
 function sendStateToClient( client, state )
 {
     msg = '{ "type": "stateChange", "state": "' + state + '" }';
-    console.log( "sendStateToClient: " + msg );
+    log( "sendStateToClient: " + msg );
     client.send( msg );
 }
 
@@ -347,28 +390,32 @@ function startImageCapture()
     var filename = "public/images/photos/" + baseFilename
     var cameraCommand;
 
-    console.log( "statImageCapture: entry" );
-    
+    log( "statImageCapture: entry. shutterTime=" + shutterTime );
+
+    // Mode 4 = 1296x972 resolution (1/4 of max) with 2x2 binning
+    // awb off turns off auto white balance
     if( shutterTime == 0 )
-	cameraCommand = 'raspistill --nopreview --timeout 1000 -q 20 -o ' + filename;
+	cameraCommand = 'raspistill --awb off --nopreview --timeout 1000 -ISO 800 --mode 4 --quality 20 --width 1296 --height 972 -o ' + filename;
     else
-	cameraCommand = 'raspistill --nopreview --timeout 1 -q 10 --shutter ' + shutterTime + ' -o ' + filename;
+	cameraCommand = 'raspistill --awb off --nopreview --timeout 1 --quality 10 -ISO 800 --mode 4 --width 1296 --height 972 --shutter ' + shutterTime + ' -o ' + filename;
+
+    log( "cameraCommand: " + cameraCommand );
     
     exec( cameraCommand, (err, stdout, stderr) => {
 	if( err )
 	{
-	    console.log( "Error taking photo" );
+	    log( "Error taking photo" );
 	    return;
 	}
-	console.log( "Photo taken: " + filename );
+	log( "Photo taken: " + filename );
 	exif.read( filename ).then( function( exifData )
 				    { var brightness = exifData.exif.BrightnessValue;
-				      console.log( "Photo brightness: " + brightness );
+				      log( "Photo brightness: " + brightness );
 				      if( brightness < minCameraBrightness )
 				      {
 					  if( brightness == 0 )
 					  {
-					      console.log( "Brightness is zero" );
+					      log( "Brightness is zero" );
 					      increaseShutterTime();
 					  }
 					  else
@@ -376,57 +423,89 @@ function startImageCapture()
 					      if( shutterTime == 0 )
 						  shutterTime = 179;
 					      
-					      newTime = shutterTime / brightness;
+					      newTime = Math.round(shutterTime / (brightness / targetCameraBrightness));
 
-					      console.log( "Brightness was low, " + brightness + " shutter was " + shutterTime / 1000000 + ", newTime=" + newTime );
+					      log( "Brightness was low, " + brightness + " shutter was " + shutterTime / 1000000 + ", newTime=" + newTime );
 					      if( newTime >= 6000000 )
 						  shutterTime = 6000000;
 					      else
 						  shutterTime = newTime;
 
-					      console.log( "new shutterTime: " + shutterTime );
+					      log( "new shutterTime: " + shutterTime );
 					  }
 				      }
-				      else if( (brightness > maxCameraBrightness) && (shutterTime != 0 ))
+				      else if( (brightness > maxCameraBrightness) /* && (shutterTime != 0 ) */ )
 				      {
-					      newTime = shutterTime / brightness;	
-					      console.log( "Brightness was high, " + brightness +
+					  if( shutterTime == 0 )
+					  {
+					      //printAttributes( exifData.exif );
+					      // convert to microseconds
+					      shutterTime = Math.round(exifData.exif.ExposureTime * 1000000);
+					  }
+					  newTime = Math.round(shutterTime / (brightness / targetCameraBrightness));
+					      log( "Brightness was high, " + brightness +
 						       " shutter was " + shutterTime / 1000000 + ", newTime=" + newTime );
 					      if( newTime >= 6000000 )
 						  shutterTime = 6000000;
 					      else
 						  shutterTime = newTime;
 
-					      console.log( "new shutterTime: " + shutterTime );
+					      log( "new shutterTime: " + shutterTime );
 				      }
-					  // console.log( "exif: " + exifData );
+					  // log( "exif: " + exifData );
 				    });
-	// function( err ) { console.log( "exif read error: " + err ); });
+	// function( err ) { log( "exif read error: " + err ); });
 
-	  uploadPhoto( baseFilename, filename, secrets.googlePhotosAlbumID, function() {
-	      // keep taking photos while triggered or in pretrigger mode
-	      /*
-	    */
-	});
+	if( prevPhotoFilename )
+	{
+	    // We get out of memory with too many compare processes. Must limit them.
+	    compareSemaphore.take( function () {
+		doCompareAndUpload( filename );
+		compareSemaphore.leave();
+	    } );
+	    
+	}
+	else
+	{
+	    log( "Uploading first Photo" );
+	    prevPhotoFilename = filename;
+	    uploadPhoto( baseFilename, filename, secrets.googlePhotosAlbumID, function() {});
+	}
 
+	// keep taking photos while triggered or in pretrigger mode
 	switch( state )
 	{
 	    case StatesEnum.preTrigger:
 	    case StatesEnum.triggered:
-	      nextImageTimer = setTimeout( function() { 
+	    case StatesEnum.waitForDisarm:
+	      var delay = 1000000 - shutterTime;
+	    
+	      log( "Next photo delay = " + delay + " us" );
+	      if( delay <= 1000 )
+	      {
+		  startImageCapture()
+	      	  // nextImageTimer = false;
+	      }
+	     else
+		 nextImageTimer = setTimeout( function() {
+		     log( "nextImageTimer function called" );
 		switch( state )
 		{
 		    case StatesEnum.preTrigger:
 		    case StatesEnum.triggered:
-		      console.log( "Calling startImageCapture for next photok" );
+		    case StatesEnum.waitForDisarm:
+		      log( "Calling startImageCapture for next photok" );
 		      startImageCapture()
 		      break;
 
 		    default:
 		      nextImageTimer = false;
 		}
-	      }, 1 ); // 1 millisecond between images 
+	       }, delay / 1000 ); // try to keep 1s between photos.
+	       break;
+	    
 	    default:
+	      log( "Not setting nextImageTimer, because state is " + state );
 	      nextImageTimer = false;
 	}
 	/*
@@ -448,11 +527,45 @@ function startImageCapture()
 			 if (err) {
 			     return console.error('upload failed:', err);
 			 }
-			 console.log('Upload successful!  Server responded with:', body);
+			 log('Upload successful!  Server responded with:', body);
 		     });
 	*/
     });
     
+}
+
+// compare if the photo with the given filename is sufficiently different from the previously uploaded
+// photo. If so upload it, otherwise ignore
+// TODO: Should autolevel images before comparison
+function compareAndUpload( filename, baseFilename )
+{
+    var compareCommand = "compare -metric NCC " + prevPhotoFilename + " " + filename + " null:";
+
+    exec( compareCommand, (err, stdout, stderr) => {
+	var difference;
+	
+	/* err 1 or 2 just indicates if the images are deemed different or not, but we use the score
+	   if( err )
+	   {
+	   log( "Error comparing photos: " + err );
+	   log( "stderr: " + stderr );
+	   log( "stdout: " + stdout );
+	   log( "command: " + compareCommand );
+	   return;
+	   }
+	*/
+	difference = parseFloat( stderr );
+	log( "Image difference: " + difference );
+
+	if( difference < photoDifferenceUploadThreshold )
+	{
+	    log( "Photo is differet, uploading" );
+	    uploadPhoto( baseFilename, filename, secrets.googlePhotosAlbumID, function() {
+		prevPhotoFilename = filename});
+	}
+	else
+	    log( "Photos too similar, not uploading" );
+    });
 }
 
 async function uploadPhoto( baseFilename, filename, albumID, callback )
@@ -469,18 +582,18 @@ async function uploadPhoto( baseFilename, filename, albumID, callback )
 		  {
 		      if( error )
 		      {
-			  console.log( "Google upload error: " + error );
+			  log( "Google upload error: " + error );
 			  return;
 		      }
 
 		      if( response.statusCode != 200 )
 		      {
-			  console.log( "Google upload error: " + response.statusCode + " " +
+			  log( "Google upload error: " + response.statusCode + " " +
 				       response.statusMessage );
 			  return;
 		      }
 		      uploadToken = body;
-		      console.log( "Photo uploaded. response: '" + response.statusCode + " " +
+		      log( "Photo uploaded. response: '" + response.statusCode + " " +
 				   response.statusMessage );
 
 		      // create media item
@@ -498,22 +611,22 @@ async function createMediaItem( uploadToken, albumID, description )
     var body = '{ "albumId": "' + albumID + '", "newMediaItems": [ { "description": "' + description +
 	'", "simpleMediaItem": { "uploadToken": "' + uploadToken + '" } } ] }';
 
-    console.log( "createMediaItem, headers=" + JSON.stringify( headers ) );
+    log( "createMediaItem, headers=" + JSON.stringify( headers ) );
 
     request.post( {url: url, headers: headers, body: body },
 		  function( error, response, body )
 		  {
 		      if( error )
 		      {
-			  console.log( "Google batchCreate error: " + error );
+			  log( "Google batchCreate error: " + error );
 			  return;
 		      }
 		      else if( response.statusCode != 200 )
 		      {
-			  console.log( "createMediaItem error code: " + response.statusCode + " " +
+			  log( "createMediaItem error code: " + response.statusCode + " " +
 				       response.statusMessage );
 		      }
-		      console.log( "Photo created in album." );
+		      log( "Photo created in album." );
 		  });
 }
 
@@ -531,21 +644,21 @@ function createAlbum( title )
 		  {
 		      if( error )
 		      {
-			  console.log( "Google album creation error: " + error );
+			  log( "Google album creation error: " + error );
 			  return;
 		      }
-		      console.log( "Album creation body: " + body );
+		      log( "Album creation body: " + body );
 		      album = JSON.parse( body );
 		      googlePhotosAlbumID = album.id;
 		      
-		      console.log( "Album created. ID=" + album.id );
+		      log( "Album created. ID=" + album.id );
 		  });
 }
 
 
 function increaseShutterTime()
 {
-    console.log( "increaseShutterTime, was " + shutterTime );	    
+    log( "increaseShutterTime, was " + shutterTime );	    
      if( shutterTime == 0 )
 	 shutterTime = 100000; // 1 / 10 second
     else
@@ -554,14 +667,14 @@ function increaseShutterTime()
 	if( shutterTime > 6000000 )
 	    shutterTime = 6000000;
     }
-    console.log( "... is now " + shutterTime );
+    log( "... is now " + shutterTime );
 }
 	
 function setBrightness( newBrightness )
 {
     fs.writeFile( brightnessFilename, newBrightness.toString(), function(err) {
 	if(err)
-	    return console.log( "Error writing to screen brightness file: " + err);
+	    return log( "Error writing to screen brightness file: " + err);
     }); 
 }
 
@@ -570,7 +683,7 @@ function dimScreen()
     if( dimmingState != DimmingStatesEnum.dimming )
     {
 	dimmingState = DimmingStatesEnum.dimming;
-	console.log( "Staring screen dimming" );
+	log( "Staring screen dimming" );
     }
 
     if( screenBrightness > 0 )
@@ -582,7 +695,7 @@ function dimScreen()
     if( screenBrightness == 0 )
     {
 	dimmingState = DimmingStatesEnum.dimmed;
-	console.log( "Screen: dimming completed" );
+	log( "Screen: dimming completed" );
     }
     else
 	brightnessTimer = setTimeout( dimScreen, brighteningIntervalMilliseconds );
@@ -599,7 +712,7 @@ function brightenScreen()
     if( screenBrightness >= maxBrightness )
     {
 	dimmingState = DimmingStatesEnum.bright;
-	console.log( "Screen: brightening completed" );
+	log( "Screen: brightening completed" );
     }
     else
 	brightnessTimer = setTimeout( brightenScreen, brighteningIntervalMilliseconds );
@@ -641,7 +754,7 @@ function saveTokens( tokens )
     fs.writeFileSync( "tokens.json", JSON.stringify( tokens ) );
 }
 
-function rearm()
+function arm()
 {
     setState( StatesEnum.armed );
 }
@@ -651,4 +764,9 @@ function refreshTokens()
 {
     oauth2Client.refreshAccessToken();
     setTimeout( refreshTokens, 25 * 60 * 1000 );
+}
+
+function log( str )
+{
+    console.log( new Date().toLocaleString() + " " + str );
 }

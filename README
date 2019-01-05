@@ -2,3 +2,16 @@ Solution for setting screen backligt permissions at boot from:
 
 https://unix.stackexchange.com/questions/68897/how-to-set-permissions-in-sys-permanent
 
+Compare photos for difference with ImageMagick:
+
+compare -metric NCC 20190103201922.jpg 20190103202247.jpg null:
+
+Use node package gm to do this according to https://www.npmjs.com/package/gm
+
+Threshold for difference between 0.997? and 0.96 ?
+/etc/xdg/lxsession/LXDE-pi/autostart starts browser on boot and sets up touchscreen.
+Copy homePanel.service to /etc/systemd/system
+sudo systemctl enable timestamp.service
+sudo systemctl start timestamp.service
+journalctl -u homePanel
+LXDE log in /home/pi/.cache/lxsession/LXDE-pi/run.log 
