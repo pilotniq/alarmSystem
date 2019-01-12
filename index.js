@@ -5,13 +5,15 @@
 const express = require('express')
 const onoff = require('onoff')
 const fs = require('fs');
+i2c = require('async-i2c-bus')
+const Max17048 = require( 'max17048' )
 var moment = require('moment');
 var request = require('request');
 var exif = require('fast-exif');
 var semaphore = require('semaphore')
-
 const { exec } = require('child_process');
 const {google} = require('googleapis');
+var Pushover = require( 'pushover-notifications' )
 
 const app = express()
 
@@ -34,6 +36,10 @@ const oauth2Client = new google.auth.OAuth2(
 );
 
 const port = 80
+
+// Initialize Pushover
+var pushover = new Pushover( { user: secrets.pushoverUserKey,
+			       token: secrets.pushoverAppKey } );
 
 // Google Authentication
 const scopes = [
@@ -162,25 +168,34 @@ var nextImageTimer;
 // camera state
 var shutterTime = 0 // 0 = auto
 // lower brightnesses will give darker pictures but shorter exposure times
-const minCameraBrightness = 0.125
-const targetCameraBrightness = 0.2
-const maxCameraBrightness = 0.25
+const minCameraBrightness = 0.07
+const targetCameraBrightness = 0.08
+const maxCameraBrightness = 0.1
 const photoDifferenceUploadThreshold = 0.995
 // contains filename of previous photo taken
 // will be compared against new photo. If difference is large enough, upload.
 var prevPhotoFilename
 var compareSemaphore = semaphore(1); // at most one compare process. Want to compare against latest uploaded.
 
+var max17048 // IC for battery monitoring
+var PowerStateEnum = { 'wallPower': 'wallPower', 'battery': 'battery', 'batteryCritical': 'batteryCritical' }
+var powerState
+const BATTERY_CHECK_INTERVAL_SECONDS = 60;
+
 app.ws( '/websocket', function( ws, req ) {
-    ws.on( 'message', function( msg ) {
-	switch( msg )
+    ws.on( 'message', function( msgText ) {
+	var msg = JSON.parse( msgText );
+	switch( msg.command )
 	{
 	    case "arm":
 	      setState( StatesEnum.waitForArm );
 	      break;
 	    
 	    case "disarm":
-	      setState( StatesEnum.disarmed );
+	      if( state == StatesEnum.waitForArm || msg.pin == secrets.pin )
+	          setState( StatesEnum.disarmed );
+	      else
+	        console.log( "Got pin '" + msg.pin + "', expecting '" + secrets.pin + "'");
 	      break;
 
 	    case "trigger":
@@ -201,6 +216,8 @@ app.get('/rearm', (req, res) => {
 app.listen(port, () => log(`Example app listening on port ${port}!`))
 
 var motionPin = new onoff.Gpio(17, 'in', 'both')
+
+startBatteryMonitoring()
 
 setDimmingState( DimmingStatesEnum.bright );
     
@@ -325,7 +342,7 @@ function setState( newState )
 	  // Notify via Pushover
   	  pushoverRequest = { 'token': secrets.pushoverAppKey,
 			      'user': secrets.pushoverUserKey,
-			      'message': "Larm på " + secrets.homeName + ". Bilder på " + secrets.albumURL,
+			      'message': "Larm på " + secrets.houseName + ". Bilder på " + secrets.albumURL,
 			      'url': secrets.albumURL,
 			      priority: 1,
 			      sound: 'siren' };
@@ -392,12 +409,13 @@ function startImageCapture()
 
     log( "statImageCapture: entry. shutterTime=" + shutterTime );
 
-    // Mode 4 = 1296x972 resolution (1/4 of max) with 2x2 binning
-    // awb off turns off auto white balance
+    // Mode 4 = 1296x972 resolution (1/4 of max) with 2x2 binning - but mode 4 can't do less than 1s per exposure
+    
+    // awbg manually sets white balance
     if( shutterTime == 0 )
-	cameraCommand = 'raspistill --awb off --nopreview --timeout 1000 -ISO 800 --mode 4 --quality 20 --width 1296 --height 972 -o ' + filename;
+	cameraCommand = 'raspistill -awb off -awbg "1.0,1.0" --nopreview --timeout 1000 -ISO 800 --quality 20 --width 1296 --height 972 -o ' + filename;
     else
-	cameraCommand = 'raspistill --awb off --nopreview --timeout 1 --quality 10 -ISO 800 --mode 4 --width 1296 --height 972 --shutter ' + shutterTime + ' -o ' + filename;
+	cameraCommand = 'raspistill -awb off -awbg "1.0,1.0" --nopreview --timeout 1 --quality 10 -ISO 800 --width 1296 --height 972 --shutter ' + shutterTime + ' -o ' + filename;
 
     log( "cameraCommand: " + cameraCommand );
     
@@ -460,7 +478,7 @@ function startImageCapture()
 	{
 	    // We get out of memory with too many compare processes. Must limit them.
 	    compareSemaphore.take( function () {
-		doCompareAndUpload( filename );
+		compareAndUpload( filename, baseFilename );
 		compareSemaphore.leave();
 	    } );
 	    
@@ -769,4 +787,100 @@ function refreshTokens()
 function log( str )
 {
     console.log( new Date().toLocaleString() + " " + str );
+}
+
+async function startBatteryMonitoring()
+{
+    const bus = i2c.Bus()
+    var chargeRate;
+    
+    await bus.open();
+
+    max17048 = new Max17048( bus )
+
+    checkBattery()
+}
+
+async function checkBattery()
+{
+    chargeRate = await max17048.getChargingRate()
+
+    log( "Battery: checkBattery: Battery charge rate is " + chargeRate * 100 + " %/h" );
+    
+    if( chargeRate >= 0 )
+	setPowerState( PowerStateEnum.wallPower )
+    else
+    {
+	var chargeState = await max17048.getStateOfCharge()
+	log( "Battery: checkBattery: Battery charge is " + chargeState * 100 + " %" );
+
+	if( chargeState < 0.1 )
+	    setPowerState( PowerStateEnum.batteryCritical )
+	else
+	    setPowerState( PowerStateEnum.battery )
+    }
+
+    setTimeout( checkBattery, BATTERY_CHECK_INTERVAL_SECONDS * 1000 )
+}
+
+function setPowerState( newState )
+{
+    var oldState = powerState;
+
+    if( oldState == newState )
+	return;
+    
+    powerState = newState;
+
+    log( "Battery: setPowerState( " + newState + " )" )
+    
+    switch( powerState )
+    {
+	case PowerStateEnum.wallPower:
+	      // Pushover notification
+	if( oldState )
+	{
+	      var msg = { "message": "Power returned at " + secrets.houseName + " alarm.",
+			  "title" :"Alarm system power is back." };
+	      pushover.send( msg, function( err, result ) {
+		  if( err )
+		      log( "Battery: Error sending push notification for power return: " + err );
+		  else
+		      log( "Battery: Successfully sent power return push notification" );
+	      } )
+	}
+	break;
+
+	case PowerStateEnum.battery:
+  	  if( oldState == PowerStateEnum.wallPower )
+	  {
+	      // Pushover notification
+	      var msg = { "message": "Power failure at " + secrets.houseName + " alarm.",
+			  "title" :"Alarm system lost power",
+			  "priority" : 1 };
+	      pushover.send( msg, function( err, result ) {
+		  if( err )
+		      log( "Battery: Error sending push notification for power failure: " + err );
+		  else
+		      log( "Battery: Successfully sent power failure push notification" );
+	      } )
+	      // minimize screen brightness
+	  }
+	  break;
+
+	case PowerStateEnum.batteryCritical:
+	  // TODO: Pushover notificaton
+	  var msg = { "message": "Battery power critical at " +secrets.houseName + " alarm. Shutting down alarm.",
+		      "title" :"Battery power critical, Alarm system shutting down",
+		      "priority" : 1 };
+	  pushover.send( msg, function( err, result ) {
+		  if( err )
+		      log( "Battery: Error sending push notification for critical power failure: " + err );
+		  else
+		      log( "Battery: Successfully sent battery power critical push notification" );
+	      } )
+	  // TODO: shutdown
+	  break;
+
+    }
 }

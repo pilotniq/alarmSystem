@@ -1,5 +1,6 @@
 <html>
-  <heaitd>
+  <head>
+    <link rel="stylesheet" href="styles.css">
     <title>Mästarbacken Control Panel</title>
     <script type="text/javascript">
       var ws;
@@ -47,59 +48,260 @@
       {
         document.getElementById("state").innerHTML = newState;
 
+        // hide all state-specific divs
+        var alarmStateDivs = document.getElementsByClassName("alarm-state-specific");
+        var i;
+        var stateDiv;
+      
+        for( i = 0; i < alarmStateDivs.length; i++ )
+	  alarmStateDivs[i].style.display = "none";
+
+	stateDiv = document.getElementById("alarm-" + newState); //
+	if( stateDiv )
+		stateDiv.style.display = "block";
+
         switch( newState )
         {
          case "disconnected":
-            document.getElementById("armButton").style.display = "none";
-            document.getElementById("disarmButton").style.display = "none";
+         case "disarmed":
+         case "waitForArm":
+            document.getElementById("disarmKeypad").style.display = "none";
             break;
       
-          case "disarmed":
-            document.getElementById("armButton").style.display = "inline-block";
-            document.getElementById("disarmButton").style.display = "none";
-            break;
-
           case "preTrigger":
-          case "waitForArm":
           case "armed":
           case "waitForDisarm":
-            document.getElementById("armButton").style.display = "none";
-            document.getElementById("disarmButton").style.display = "inline-block";
-            break;
-      
           case "triggered":
-            document.getElementById("armButton").style.display = "inline-block";
-            document.getElementById("disarmButton").style.display = "inline-block";
+            document.getElementById("disarmKeypad").style.display = "block";
+            // document.getElementById("disarmButton").style.display = "inline-block";
             break;
       
           default:
             alert("Invalid state: " + newState );
-        }
+	}
       }
 
       function arm()
-      {
-        ws.send("arm");
+	{
+	var msg = { "command": "arm" };
+			
+        ws.send( JSON.stringify( msg ) );
       }
       
-      function disarm()
+      function disarm( pin )
       {
-        ws.send("disarm");
+			var msg = { "command": "disarm" };
+			if( pin )
+			msg.pin = pin;
+	ws.send( JSON.stringify( msg ));
       }
 
       function trigger()
-      {
-        ws.send( "trigger" );
+	{
+	  var msg = { "command": "trigger" };		
+        ws.send( JSON.stringify( msg ) );
       }
+
+      // from https://www.w3schools.com/w3css/w3css_tabulators.asp
+      function displayTab( tabName )
+      {
+        var i;
+        const contentTabName = tabName + "TabContent";
+        const buttonName = tabName + "TabButton";
+      
+        var x = document.getElementsByClassName("tabContents");
+        for (i = 0; i < x.length; i++) {
+	  x[i].style.display = "none";
+	}
+	document.getElementById(contentTabName).style.display = "block";
+
+	var buttons = document.getElementsByClassName("tabButton");
+	for (i = 0; i < buttons.length; i++) {
+	  if( buttons[i].id == buttonName )	
+	    buttons[i].className = "tabButton selected";
+	  else
+	    buttons[i].className = "tabButton";
+	}
+      }
+			
+      function doKeypad( button )
+      {
+	var pinElement;
+	var pinText;
+			
+	pinElement = document.getElementById( "pin" );
+			
+	console.log( "Key: " + button.innerHTML );
+
+	var pinText = pinElement.innerHTML;
+
+	var index = pinText.indexOf( "-" );
+			
+	pinText = pinText.substring( 0, index ) + button.innerHTML + pinText.substring( index + 1, 4 ); 
+
+	if( index == 3 )
+	{
+			disarm( pinText );
+			pinElement.innerHTML = "----";
+	}
+	else
+	  pinElement.innerHTML = pinText;
+      }
+			
     </script>
+    <style>
+      ul {
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        width: 100vh;
+      
+      <!-- background-color: #f1f1f1; -->
+        background: black;
+      }
+
+      li { float: left; }
+      
+      li button {
+        display: block;
+        <!-- color: #000; -->
+        text-align: center;
+        padding: 14px 16px;
+        text-decoration: none;
+	background-color: black;
+	color: white;
+      }
+
+      /* Change the link color on hover */
+      li button:hover {
+        background-color: #555;
+        color: white;
+      }
+
+      footer {
+        clear: both;
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        height: 10vh;
+        background: black;
+        padding: 0px;
+      }
+
+      .viewport-container {
+        min-height: 90vh; /* will cover the 100% of viewport */
+	max-height: 90vh;
+	height: 90vh;
+        overflow: hidden;
+        display: block;
+        position: relative;
+        padding-bottom: 10vh; /* height of your footer */
+      }
+
+      .tabContents {
+        margin: 8px;
+      }
+      body {
+        margin: 0px;
+      }
+
+      .tabButton {
+      border: none;
+      height: 10vh;
+      font-size: 5vh;
+	margin: 0 20px 0 20px;
+	}
+
+      .selected {
+	background-color: green;
+      }
+
+     .keypadNumber {
+	border: 1px solid;
+	font-size: 3em;
+	border-radius: 40px;
+	margin-top: 0.2em;
+	vertical-align: middle;
+	width: 1.2em;
+	height: 1.2em;
+	text-align: center;
+	display: inline-block;
+	}
+
+	.keypadRow {
+	  width: 100%;
+	  div {
+	    border: 1px solid;
+	    display: inline-block;
+	  }
+	}
+    </style>
   </head>
   <body>
-    <h1>Mästarbacken Control Panel</h1>
-    
-    <p>State:<span id=state></span></p>
-    
-    <button id="triggerButton" type="button" style="display:none;height:10vh;width:80%" onClick="trigger()">Trigger</button>
-    <button id="armButton" type="button" style="display:none;height:10vh;width:80%" onClick="arm()">Arm</button>
-    <button id="disarmButton" type="button" style="display:inline-block;height:10vh;width:80%" onClick="disarm()">Disarm</button>
+    <div class="viewport-container">
+      <div id="alarmTabContent" class="tabContents">
+        <h1>Mästarbacken Control Panel</h1>
+        <p class="state">State:<span id=state></span></p>
+	<div id="alarm-disarmed" class="alarm-state-specific">
+	  <h2>Disarmed</h2>
+          <button id="armButton" class="button" onClick="arm()">Aptera</button>
+	</div>
+	<div id="alarm-armed" class="alarm-state-specific">
+	  <h2>Apterat</h2>
+	</div>
+	<div id="alarm-waitForDisarm" class="alarm-state-specific">
+	  <h2>Desarmera!</h2>
+          <button id="disarmButton" class="button" onClick="disarm()">Desarmera</button>
+	</div>
+	
+	<div id="alarm-triggered" class="alarm-state-specific">
+	  <h2>Larmar!</h2>
+          <button id="disarmButton" class="button" onClick="disarm()">Desarmera</button>
+	</div>
+	
+	<div id="disarmKeypad">
+	  <span id="pin">----</span>
+	  <div class="keypadRow"> <!-- row 1 -->
+	    <button class="keypadNumber" onClick="doKeypad(this)">1</button>
+	    <button class="keypadNumber" onClick="doKeypad(this)">2</button>
+	    <button class="keypadNumber" onClick="doKeypad(this)">3</button>
+	  </div>
+	  <div>
+	    <button class="keypadNumber" onClick="doKeypad(this)">4</button>
+	    <button class="keypadNumber" onClick="doKeypad(this)">5</button>
+	    <button class="keypadNumber" onClick="doKeypad(this)">6</button>
+	  </div>
+	  <div>
+	    <button class="keypadNumber" onClick="doKeypad(this)">7</button>
+	    <button class="keypadNumber" onClick="doKeypad(this)">8</button>
+	    <button class="keypadNumber" onClick="doKeypad(this)">9</button>
+	  </div>
+	  <div>
+	    <button class="keypadNumber" onClick="doKeypad(this)">_</button>
+	    <button class="keypadNumber" onClick="doKeypad(this)">0</button>
+	    <button class="keypadNumber" onClick="doKeypad(this)">⌫</button>
+	  </div>
+	</div>
+	<div id="alarm-waitForArm" class="alarm-state-specific">
+	  <button id="cancelArm" onClick="disarm()">Avbryt Aptering</bytton>
+        </div>
+<!--
+        <button id="triggerButton" class="button" type="button" style="display:none" onClick="trigger()">Trigger</button>
+-->
+      </div>
+      <div class="tabContents" id="weatherTabContent">
+      </div>
+      <div id="electricityTabContent" class="tabContents">
+      </div>
+    <footer>
+    <nav>
+      <ul>
+	<li><button id="alarmTabButton" class="tabButton" onclick="displayTab( 'alarm' )">Larm</a></li>
+	<li><button id="weatherTabButton" class="tabButton" onClick="displayTab( 'weather' )">Väder</a></li>
+	<li><button id="electricityTabButton" class="tabButton" onClick="displayTab( 'electricity' )">El</a></li>
+     </ul>
+    </nav>
+    </footer>
+    </div> <!-- viewport-container -->
   </body>
 </html>
