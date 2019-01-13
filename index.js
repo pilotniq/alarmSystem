@@ -16,6 +16,7 @@ const app = express()
 
 const ups = require ('./ups')
 const logging = require( './logging' )
+const lights = require( './lights' )
 
 // load secrets. OAuth tokens are stored separately
 // Will contain fields:
@@ -29,6 +30,8 @@ const logging = require( './logging' )
 const secrets = JSON.parse(fs.readFileSync('secrets.json', 'utf8'));
 log( "Read secrets" );
 
+lights.setKey( secrets.deconzKey, secrets.deconzHostname )
+	       
 const oauth2Client = new google.auth.OAuth2(
     secrets.googlePhotosClientID,
     secrets.googlePhotosClientSecret,
@@ -226,6 +229,8 @@ motionPin.watch( function(err, value) {
     log( "Motion: got value " + value );
     if( value == 1 )
     {
+	lights.motion()
+	
 	switch( dimmingState )
 	{
 	    case DimmingStatesEnum.bright:
@@ -310,13 +315,22 @@ function setState( newState )
 
     switch( newState )
     {
+	case StatesEnum.disarmed:
+	  lights.setBrightness( lights.defaultBrightness );
+	  lights.setMotionTrigger( true )
+	  break;
+	
 	case StatesEnum.waitForArm:
+	  lights.setBrightness( lights.defaultBrightness )
+	  lights.setMotionTrigger( true )
 	  setDimmingState( DimmingStatesEnum.bright );
 	  waitForArmTimer = setTimeout( arm, waitForArmTimeSeconds * 1000 );
 	  break;
 	
 	case StatesEnum.armed:
 	  // When going from pretriggered to armed, 
+	  lights.setBrightness( lights.maxBrightness )
+	  lights.setMotionTrigger( true )
 	  setDimmingState( DimmingStatesEnum.bright );
 	  if( nextImageTimer )
 	    clearTimeout( nextImageTimer );
@@ -324,17 +338,26 @@ function setState( newState )
 	
 	case StatesEnum.preTrigger:
 	  setDimmingState( DimmingStatesEnum.fixedBright )
+	  lights.setMotionTrigger( false )
+	  lights.setState( true )
+	  lights.setBrightness( lights.maxBrightness )
 	  startImageCapture();
 	  preTriggerTimer = setTimeout( deTrigger, preTriggerTimeSeconds * 1000 );
 	  break;
 
 	case StatesEnum.waitForDisarm:
 	  setDimmingState( DimmingStatesEnum.fixedBright )
+	  lights.setBrightness( lights.maxBrightness )
+	  lights.setMotionTrigger( false )
+	  lights.setState( true )
 	  waitForDisarmTimer = setTimeout( trigger, waitForDisarmMaxTimeSeconds * 1000 );
 	  break;
 	
 	case StatesEnum.triggered:
 	  // Notify via Pushover
+	  lights.setBrightness( lights.maxBrightness )
+	  lights.setMotionTrigger( false )
+	  lights.setState( true )
   	  pushoverRequest = { 'token': secrets.pushoverAppKey,
 			      'user': secrets.pushoverUserKey,
 			      'message': "Larm på " + secrets.houseName + ". Bilder på " + secrets.albumURL,
