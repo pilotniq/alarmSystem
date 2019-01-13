@@ -5,8 +5,6 @@
 const express = require('express')
 const onoff = require('onoff')
 const fs = require('fs');
-i2c = require('async-i2c-bus')
-const Max17048 = require( 'max17048' )
 var moment = require('moment');
 var request = require('request');
 var exif = require('fast-exif');
@@ -14,8 +12,10 @@ var semaphore = require('semaphore')
 const { exec } = require('child_process');
 const {google} = require('googleapis');
 var Pushover = require( 'pushover-notifications' )
-
 const app = express()
+
+const ups = require ('./ups')
+const logging = require( './logging' )
 
 // load secrets. OAuth tokens are stored separately
 // Will contain fields:
@@ -177,10 +177,7 @@ const photoDifferenceUploadThreshold = 0.995
 var prevPhotoFilename
 var compareSemaphore = semaphore(1); // at most one compare process. Want to compare against latest uploaded.
 
-var max17048 // IC for battery monitoring
-var PowerStateEnum = { 'wallPower': 'wallPower', 'battery': 'battery', 'batteryCritical': 'batteryCritical' }
-var powerState
-const BATTERY_CHECK_INTERVAL_SECONDS = 60;
+ups.startBatteryMonitoring( upsCallback )
 
 app.ws( '/websocket', function( ws, req ) {
     ws.on( 'message', function( msgText ) {
@@ -216,8 +213,6 @@ app.get('/rearm', (req, res) => {
 app.listen(port, () => log(`Example app listening on port ${port}!`))
 
 var motionPin = new onoff.Gpio(17, 'in', 'both')
-
-startBatteryMonitoring()
 
 setDimmingState( DimmingStatesEnum.bright );
     
@@ -786,60 +781,17 @@ function refreshTokens()
 
 function log( str )
 {
-    console.log( new Date().toLocaleString() + " " + str );
+    logging.log( str );
 }
 
-async function startBatteryMonitoring()
+function upsCallback( oldState, newState )
 {
-    const bus = i2c.Bus()
-    var chargeRate;
-    
-    await bus.open();
-
-    max17048 = new Max17048( bus )
-
-    checkBattery()
-}
-
-async function checkBattery()
-{
-    chargeRate = await max17048.getChargingRate()
-
-    log( "Battery: checkBattery: Battery charge rate is " + chargeRate * 100 + " %/h" );
-    
-    if( chargeRate >= 0 )
-	setPowerState( PowerStateEnum.wallPower )
-    else
+    switch( newState )
     {
-	var chargeState = await max17048.getStateOfCharge()
-	log( "Battery: checkBattery: Battery charge is " + chargeState * 100 + " %" );
-
-	if( chargeState < 0.1 )
-	    setPowerState( PowerStateEnum.batteryCritical )
-	else
-	    setPowerState( PowerStateEnum.battery )
-    }
-
-    setTimeout( checkBattery, BATTERY_CHECK_INTERVAL_SECONDS * 1000 )
-}
-
-function setPowerState( newState )
-{
-    var oldState = powerState;
-
-    if( oldState == newState )
-	return;
-    
-    powerState = newState;
-
-    log( "Battery: setPowerState( " + newState + " )" )
-    
-    switch( powerState )
-    {
-	case PowerStateEnum.wallPower:
+	case ups.PowerStateEnum.wallPower:
 	      // Pushover notification
-	if( oldState )
-	{
+	  if( oldState )
+	  {
 	      var msg = { "message": "Power returned at " + secrets.houseName + " alarm.",
 			  "title" :"Alarm system power is back." };
 	      pushover.send( msg, function( err, result ) {
@@ -848,11 +800,11 @@ function setPowerState( newState )
 		  else
 		      log( "Battery: Successfully sent power return push notification" );
 	      } )
-	}
-	break;
+	  }
+	  break;
 
-	case PowerStateEnum.battery:
-  	  if( oldState == PowerStateEnum.wallPower )
+	case ups.PowerStateEnum.battery:
+  	  if( oldState == ups.PowerStateEnum.wallPower )
 	  {
 	      // Pushover notification
 	      var msg = { "message": "Power failure at " + secrets.houseName + " alarm.",
@@ -868,7 +820,7 @@ function setPowerState( newState )
 	  }
 	  break;
 
-	case PowerStateEnum.batteryCritical:
+	case ups.PowerStateEnum.batteryCritical:
 	  // TODO: Pushover notificaton
 	  var msg = { "message": "Battery power critical at " +secrets.houseName + " alarm. Shutting down alarm.",
 		      "title" :"Battery power critical, Alarm system shutting down",
