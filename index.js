@@ -7,16 +7,16 @@ const onoff = require('onoff')
 const fs = require('fs');
 var moment = require('moment');
 var request = require('request');
-var exif = require('fast-exif');
 var semaphore = require('semaphore')
 const { exec } = require('child_process');
 const {google} = require('googleapis');
 var Pushover = require( 'pushover-notifications' )
 const app = express()
 
-const ups = require ('./ups')
 const logging = require( './logging' )
+const ups = require ('./ups')
 const lights = require( './lights' )
+const camera = require( './camera' )
 
 // load secrets. OAuth tokens are stored separately
 // Will contain fields:
@@ -168,12 +168,6 @@ const waitForArmTimeSeconds = 60;
 
 var nextImageTimer;
 
-// camera state
-var shutterTime = 0 // 0 = auto
-// lower brightnesses will give darker pictures but shorter exposure times
-const minCameraBrightness = 0.07
-const targetCameraBrightness = 0.08
-const maxCameraBrightness = 0.1
 const photoDifferenceUploadThreshold = 0.995
 // contains filename of previous photo taken
 // will be compared against new photo. If difference is large enough, upload.
@@ -417,7 +411,7 @@ function sendStateToClient( client, state )
     client.send( msg );
 }
 
-function startImageCapture()
+async function startImageCapture()
 {
     var now = moment();
     var formatted = now.format( "YYYYMMDDHHmmss" );
@@ -425,106 +419,44 @@ function startImageCapture()
     var filename = "public/images/photos/" + baseFilename
     var cameraCommand;
 
-    log( "statImageCapture: entry. shutterTime=" + shutterTime );
+    log( "statImageCapture: entry." );
 
-    // Mode 4 = 1296x972 resolution (1/4 of max) with 2x2 binning - but mode 4 can't do less than 1s per exposure
+    await camera.takePicture( filename );
+
+    log( "after takePicture, file exists: " + fs.existsSync( filename ) );
     
-    // awbg manually sets white balance
-    if( shutterTime == 0 )
-	cameraCommand = 'raspistill -awb off -awbg "1.0,1.0" --nopreview --timeout 1000 -ISO 800 --quality 20 --width 1296 --height 972 -o ' + filename;
+    if( prevPhotoFilename )
+    {
+	// We get out of memory with too many compare processes. Must limit them.
+	compareSemaphore.take( function () {
+	    compareAndUpload( filename, baseFilename );
+	    compareSemaphore.leave();
+	} );
+    }
     else
-	cameraCommand = 'raspistill -awb off -awbg "1.0,1.0" --nopreview --timeout 1 --quality 10 -ISO 800 --width 1296 --height 972 --shutter ' + shutterTime + ' -o ' + filename;
-
-    log( "cameraCommand: " + cameraCommand );
+    {
+	log( "Uploading first Photo" );
+	prevPhotoFilename = filename;
+	uploadPhoto( baseFilename, filename, secrets.googlePhotosAlbumID, function() {});
+    }
     
-    exec( cameraCommand, (err, stdout, stderr) => {
-	if( err )
-	{
-	    log( "Error taking photo" );
-	    return;
-	}
-	log( "Photo taken: " + filename );
-	exif.read( filename ).then( function( exifData )
-				    { var brightness = exifData.exif.BrightnessValue;
-				      log( "Photo brightness: " + brightness );
-				      if( brightness < minCameraBrightness )
-				      {
-					  if( brightness == 0 )
-					  {
-					      log( "Brightness is zero" );
-					      increaseShutterTime();
-					  }
-					  else
-					  {
-					      if( shutterTime == 0 )
-						  shutterTime = 179;
-					      
-					      newTime = Math.round(shutterTime / (brightness / targetCameraBrightness));
-
-					      log( "Brightness was low, " + brightness + " shutter was " + shutterTime / 1000000 + ", newTime=" + newTime );
-					      if( newTime >= 6000000 )
-						  shutterTime = 6000000;
-					      else
-						  shutterTime = newTime;
-
-					      log( "new shutterTime: " + shutterTime );
-					  }
-				      }
-				      else if( (brightness > maxCameraBrightness) /* && (shutterTime != 0 ) */ )
-				      {
-					  if( shutterTime == 0 )
-					  {
-					      //printAttributes( exifData.exif );
-					      // convert to microseconds
-					      shutterTime = Math.round(exifData.exif.ExposureTime * 1000000);
-					  }
-					  newTime = Math.round(shutterTime / (brightness / targetCameraBrightness));
-					      log( "Brightness was high, " + brightness +
-						       " shutter was " + shutterTime / 1000000 + ", newTime=" + newTime );
-					      if( newTime >= 6000000 )
-						  shutterTime = 6000000;
-					      else
-						  shutterTime = newTime;
-
-					      log( "new shutterTime: " + shutterTime );
-				      }
-					  // log( "exif: " + exifData );
-				    });
-	// function( err ) { log( "exif read error: " + err ); });
-
-	if( prevPhotoFilename )
-	{
-	    // We get out of memory with too many compare processes. Must limit them.
-	    compareSemaphore.take( function () {
-		compareAndUpload( filename, baseFilename );
-		compareSemaphore.leave();
-	    } );
-	    
-	}
-	else
-	{
-	    log( "Uploading first Photo" );
-	    prevPhotoFilename = filename;
-	    uploadPhoto( baseFilename, filename, secrets.googlePhotosAlbumID, function() {});
-	}
-
-	// keep taking photos while triggered or in pretrigger mode
-	switch( state )
-	{
-	    case StatesEnum.preTrigger:
-	    case StatesEnum.triggered:
-	    case StatesEnum.waitForDisarm:
-	      var delay = 1000000 - shutterTime;
-	    
-	      log( "Next photo delay = " + delay + " us" );
-	      if( delay <= 1000 )
-	      {
-		  startImageCapture()
-	      	  // nextImageTimer = false;
-	      }
-	     else
-		 nextImageTimer = setTimeout( function() {
-		     log( "nextImageTimer function called" );
+    // keep taking photos while triggered or in pretrigger mode
+    switch( state )
+    {
+	case StatesEnum.preTrigger:
+	case StatesEnum.triggered:
+	case StatesEnum.waitForDisarm:
+	  var delay = 1000000 - camera.getShutterTime_us()
+	
+	  log( "Next photo delay = " + delay + " us" );
+	  if( delay <= 1000 )
+	  {
+	      startImageCapture()
+	      // nextImageTimer = false;
+	  }
+	  else
+	      nextImageTimer = setTimeout( function() {
+		  log( "nextImageTimer function called" );
 		switch( state )
 		{
 		    case StatesEnum.preTrigger:
@@ -540,10 +472,10 @@ function startImageCapture()
 	       }, delay / 1000 ); // try to keep 1s between photos.
 	       break;
 	    
-	    default:
-	      log( "Not setting nextImageTimer, because state is " + state );
-	      nextImageTimer = false;
-	}
+	default:
+	  log( "Not setting nextImageTimer, because state is " + state );
+	  nextImageTimer = false;
+    } // end of switch
 	/*
 	 * Implementation for other host:
 	 *
@@ -566,8 +498,6 @@ function startImageCapture()
 			 log('Upload successful!  Server responded with:', body);
 		     });
 	*/
-    });
-    
 }
 
 // compare if the photo with the given filename is sufficiently different from the previously uploaded
@@ -662,7 +592,8 @@ async function createMediaItem( uploadToken, albumID, description )
 			  log( "createMediaItem error code: " + response.statusCode + " " +
 				       response.statusMessage );
 		      }
-		      log( "Photo created in album." );
+		      else
+			  log( "Photo created in album." );
 		  });
 }
 
@@ -691,7 +622,7 @@ function createAlbum( title )
 		  });
 }
 
-
+/*
 function increaseShutterTime()
 {
     log( "increaseShutterTime, was " + shutterTime );	    
@@ -705,7 +636,7 @@ function increaseShutterTime()
     }
     log( "... is now " + shutterTime );
 }
-	
+*/	
 function setBrightness( newBrightness )
 {
     fs.writeFile( brightnessFilename, newBrightness.toString(), function(err) {
