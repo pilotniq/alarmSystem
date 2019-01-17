@@ -2,152 +2,11 @@
   <head>
     <link rel="stylesheet" href="styles.css">
     <title>Mästarbacken Control Panel</title>
+    <script type="text/javascript" src="scripts.js"></script>
     <script type="text/javascript">
-      var ws;
-      
       reconnect();
 
-      function reconnect()
-      {
-        ws = new WebSocket('ws://hallen.local/websocket')
-
-        console.log( "Reconnecting..." );
-      
-        ws.onopen = function() {
-          console.log( "Websocket connection opened." );
-        };
-
-      ws.onmessage = function (evt) {
-        var text_msg = evt.data;
-        console.log("Message is received...:" + text_msg);
-      
-        msg = JSON.parse( text_msg );
-        switch( msg.type )
-        {
-          case 'stateChange':
-            setState( msg.state );
-            state = msg.state;
-            
-            break;
-
-          default:
-            console.log( "ERROR: Unknown message type " + msg.type );
-        }
-      };
-
-        ws.onclose = function() {
-          // websocket is closed.
-          console.log("Websocket connection is closed...");
-          setState( "disconnected" );
-          reconnect();
-         // var ws = new WebSocket('ws://hallen.local/websocket')
-        };
-      }
-      
-      function setState( newState )
-      {
-        document.getElementById("state").innerHTML = newState;
-
-        // hide all state-specific divs
-        var alarmStateDivs = document.getElementsByClassName("alarm-state-specific");
-        var i;
-        var stateDiv;
-      
-        for( i = 0; i < alarmStateDivs.length; i++ )
-	  alarmStateDivs[i].style.display = "none";
-
-	stateDiv = document.getElementById("alarm-" + newState); //
-	if( stateDiv )
-		stateDiv.style.display = "block";
-
-        switch( newState )
-        {
-         case "disconnected":
-         case "disarmed":
-         case "waitForArm":
-            document.getElementById("disarmKeypad").style.display = "none";
-            break;
-      
-          case "preTrigger":
-          case "armed":
-          case "waitForDisarm":
-          case "triggered":
-            document.getElementById("disarmKeypad").style.display = "block";
-            // document.getElementById("disarmButton").style.display = "inline-block";
-            break;
-      
-          default:
-            alert("Invalid state: " + newState );
-	}
-      }
-
-      function arm()
-	{
-	var msg = { "command": "arm" };
-			
-        ws.send( JSON.stringify( msg ) );
-      }
-      
-      function disarm( pin )
-      {
-			var msg = { "command": "disarm" };
-			if( pin )
-			msg.pin = pin;
-	ws.send( JSON.stringify( msg ));
-      }
-
-      function trigger()
-	{
-	  var msg = { "command": "trigger" };		
-        ws.send( JSON.stringify( msg ) );
-      }
-
-      // from https://www.w3schools.com/w3css/w3css_tabulators.asp
-      function displayTab( tabName )
-      {
-        var i;
-        const contentTabName = tabName + "TabContent";
-        const buttonName = tabName + "TabButton";
-      
-        var x = document.getElementsByClassName("tabContents");
-        for (i = 0; i < x.length; i++) {
-	  x[i].style.display = "none";
-	}
-	document.getElementById(contentTabName).style.display = "block";
-
-	var buttons = document.getElementsByClassName("tabButton");
-	for (i = 0; i < buttons.length; i++) {
-	  if( buttons[i].id == buttonName )	
-	    buttons[i].className = "tabButton selected";
-	  else
-	    buttons[i].className = "tabButton";
-	}
-      }
-			
-      function doKeypad( button )
-      {
-	var pinElement;
-	var pinText;
-			
-	pinElement = document.getElementById( "pin" );
-			
-	console.log( "Key: " + button.innerHTML );
-
-	var pinText = pinElement.innerHTML;
-
-	var index = pinText.indexOf( "-" );
-			
-	pinText = pinText.substring( 0, index ) + button.innerHTML + pinText.substring( index + 1, 4 ); 
-
-	if( index == 3 )
-	{
-			disarm( pinText );
-			pinElement.innerHTML = "----";
-	}
-	else
-	  pinElement.innerHTML = pinText;
-      }
-			
+      getLocationAndWeather();
     </script>
     <style>
       ul {
@@ -200,6 +59,7 @@
 
       .tabContents {
         margin: 8px;
+	text-align: center; // here
       }
       body {
         margin: 0px;
@@ -216,10 +76,13 @@
 	background-color: green;
       }
 
+      .pin {
+	font-size: 4em;
+	}
      .keypadNumber {
 	border: 1px solid;
-	font-size: 3em;
-	border-radius: 40px;
+	font-size: 4em;
+	border-radius: 60px;
 	margin-top: 0.2em;
 	vertical-align: middle;
 	width: 1.2em;
@@ -240,27 +103,28 @@
   <body>
     <div class="viewport-container">
       <div id="alarmTabContent" class="tabContents">
-        <h1>Mästarbacken Control Panel</h1>
-        <p class="state">State:<span id=state></span></p>
+        <!-- <h1>Mästarbacken Control Panel</h1> -->
+        <!-- <p class="state">State:<span id=state></span></p> -->
 	<div id="alarm-disarmed" class="alarm-state-specific">
-	  <h2>Disarmed</h2>
+	  <h1>Larm Avstängt</h1>
           <button id="armButton" class="button" onClick="arm()">Aptera</button>
 	</div>
 	<div id="alarm-armed" class="alarm-state-specific">
-	  <h2>Apterat</h2>
+	  <h1>Apterat</h1>
 	</div>
 	<div id="alarm-waitForDisarm" class="alarm-state-specific">
-	  <h2>Desarmera!</h2>
-          <button id="disarmButton" class="button" onClick="disarm()">Desarmera</button>
+	  <h1>Desarmera!</h1>
+          <span id="disarmCountdownTimer" class="countdownTimer"></span>
+          <!-- <button id="disarmButton" class="button" onClick="disarm()">Desarmera</button> -->
 	</div>
 	
 	<div id="alarm-triggered" class="alarm-state-specific">
-	  <h2>Larmar!</h2>
-          <button id="disarmButton" class="button" onClick="disarm()">Desarmera</button>
+	  <h1>Larmar!</h1>
+          <!-- <button id="disarmButton" class="button" onClick="disarm()">Desarmera</button> -->
 	</div>
 	
 	<div id="disarmKeypad">
-	  <span id="pin">----</span>
+	  <span id="pin" class="pin">----</span>
 	  <div class="keypadRow"> <!-- row 1 -->
 	    <button class="keypadNumber" onClick="doKeypad(this)">1</button>
 	    <button class="keypadNumber" onClick="doKeypad(this)">2</button>
@@ -283,24 +147,40 @@
 	  </div>
 	</div>
 	<div id="alarm-waitForArm" class="alarm-state-specific">
-	  <button id="cancelArm" onClick="disarm()">Avbryt Aptering</bytton>
+	  <h2>Apterar...</h2>
+	  <div><button id="cancelArm" class="button" onClick="disarm()">Avbryt Aptering</button></div>
+          <span id="armCountdownTimer" class="countdownTimer"></span>
         </div>
 <!--
         <button id="triggerButton" class="button" type="button" style="display:none" onClick="trigger()">Trigger</button>
 -->
       </div>
       <div class="tabContents" id="weatherTabContent">
+        <p class="temperature"><span id="temperature"></span>℃</p>
+	<div id="weatherSymbol">
+	  <img class="weatherSymbol" id="weatherSymbolImage"/>
+	</div>
+	<p class="wind">Vind: <span id="windSpeed"></span> m/s <span id="windDirection"></span></p>
+	<ul class="forecast" id="forecast">
+	  <!--
+	    <div> 
+	      <img src="https://api.met.no/weatherapi/weathericon/1.1/?symbol=1&content_type=image/svg%2Bxml" /><br />
+	      <span>10:00-12:00</span><br />
+	      <span>-1..+2, 3 m/s</span>
+            </div>
+	    -->
+	</ul>
       </div>
       <div id="electricityTabContent" class="tabContents">
       </div>
     <footer>
-    <nav>
-      <ul>
+      <nav>
+       <ul>
 	<li><button id="alarmTabButton" class="tabButton" onclick="displayTab( 'alarm' )">Larm</a></li>
 	<li><button id="weatherTabButton" class="tabButton" onClick="displayTab( 'weather' )">Väder</a></li>
 	<li><button id="electricityTabButton" class="tabButton" onClick="displayTab( 'electricity' )">El</a></li>
-     </ul>
-    </nav>
+       </ul>
+      </nav>
     </footer>
     </div> <!-- viewport-container -->
   </body>

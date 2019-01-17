@@ -163,7 +163,7 @@ var brightnessTimer;
 var waitForArmTimer, preTriggerTimer, waitForDisarmTimer, triggeredTimer;
 const preTriggerTimeSeconds = 30; // two motion detections in 30 seconds triggers alarm. Only one is forgotten
 const maxTriggeredTimeSeconds = 60;
-const waitForDisarmMaxTimeSeconds = 2 * 60;
+const waitForDisarmMaxTimeSeconds = 60;
 const waitForArmTimeSeconds = 60;
 
 var nextImageTimer;
@@ -207,6 +207,12 @@ app.get('/rearm', (req, res) => {
     setState( StatesEnum.armed );
     res.send('Armed.');
 })
+app.get('/location', (req, res) => {
+    var location = { "longitude": secrets.longitude, "latitude": secrets.latitude, "altitude": secrets.altitude }
+    res.send( location );
+})
+
+
 app.listen(port, () => log(`Example app listening on port ${port}!`))
 
 var motionPin = new onoff.Gpio(17, 'in', 'both')
