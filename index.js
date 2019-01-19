@@ -10,13 +10,14 @@ var request = require('request');
 var semaphore = require('semaphore')
 const { exec } = require('child_process');
 const {google} = require('googleapis');
-var Pushover = require( 'pushover-notifications' )
 const app = express()
 
 const logging = require( './logging' )
 const ups = require ('./ups')
 const lights = require( './lights' )
 const camera = require( './camera' )
+const alarmCloud = require( './alarmCloud' )
+const notifications = require( './notifications' )
 
 // load secrets. OAuth tokens are stored separately
 // Will contain fields:
@@ -30,8 +31,10 @@ const camera = require( './camera' )
 const secrets = JSON.parse(fs.readFileSync('secrets.json', 'utf8'));
 log( "Read secrets" );
 
+alarmCloud.configure( secrets.cloudURL, secrets.cloudKey )
+
 lights.setKey( secrets.deconzKey, secrets.deconzHostname )
-	       
+
 const oauth2Client = new google.auth.OAuth2(
     secrets.googlePhotosClientID,
     secrets.googlePhotosClientSecret,
@@ -41,8 +44,9 @@ const oauth2Client = new google.auth.OAuth2(
 const port = 80
 
 // Initialize Pushover
-var pushover = new Pushover( { user: secrets.pushoverUserKey,
-			       token: secrets.pushoverAppKey } );
+notifications.configure( secrets.pushoverUserKey, secrets.pushoverAppKey );
+
+// var pushover = new Pushover( { 
 
 // Google Authentication
 const scopes = [
@@ -316,6 +320,7 @@ function setState( newState )
     switch( newState )
     {
 	case StatesEnum.disarmed:
+	  alarmCloud.disarmed()
 	  lights.setBrightness( lights.defaultBrightness );
 	  lights.setMotionTrigger( true )
 	  break;
@@ -351,13 +356,17 @@ function setState( newState )
 	  lights.setMotionTrigger( false )
 	  lights.setState( true )
 	  waitForDisarmTimer = setTimeout( trigger, waitForDisarmMaxTimeSeconds * 1000 );
+	
+	  // send a message to stratus that we are in waitForDisarm mode.
+	  // then send a message again when we are disarmed.
+	  // if stratus doesn't get the second message, it sends alarm notification
+	  alarmCloud.waiForDisarm( "waitForDisarm" )
 	  break;
 	
 	case StatesEnum.triggered:
 	  // Notify via Pushover
-	  lights.setBrightness( lights.maxBrightness )
-	  lights.setMotionTrigger( false )
-	  lights.setState( true )
+	notifications.notify( "Larm på " + secrets.houseName + ". Bilder på " + secrets.albumURL, "Inbrottslarm på " + secrets.houseName, 1 )
+	/*
   	  pushoverRequest = { 'token': secrets.pushoverAppKey,
 			      'user': secrets.pushoverUserKey,
 			      'message': "Larm på " + secrets.houseName + ". Bilder på " + secrets.albumURL,
@@ -371,6 +380,11 @@ function setState( newState )
 			 }
 			 log('Notification successful!  Server responded with:', body);
 		     });
+*/
+	  lights.setBrightness( lights.maxBrightness )
+	  lights.setMotionTrigger( false )
+	  lights.setState( true )
+	  alarmCloud.triggered()
 	
 	  // start capturing images. Send to Google?
 	  log( "Calling startImageCapture" );
@@ -388,6 +402,7 @@ function setState( newState )
 	sendStateToClient( client, state );
     });
 }
+
 
 // called in preTrigger mode, if no additional motion has been detected within a certain time.
 function deTrigger()
@@ -754,12 +769,15 @@ function upsCallback( oldState, newState )
 	  {
 	      var msg = { "message": "Power returned at " + secrets.houseName + " alarm.",
 			  "title" :"Alarm system power is back." };
+	      notifications.notify( msg.message, msg.title, 2 )
+	      /*
 	      pushover.send( msg, function( err, result ) {
 		  if( err )
 		      log( "Battery: Error sending push notification for power return: " + err );
 		  else
 		      log( "Battery: Successfully sent power return push notification" );
-	      } )
+	      } 
+	      */
 	  }
 	  break;
 
@@ -770,12 +788,15 @@ function upsCallback( oldState, newState )
 	      var msg = { "message": "Power failure at " + secrets.houseName + " alarm.",
 			  "title" :"Alarm system lost power",
 			  "priority" : 1 };
+	      notifications.notify( msg.message, msg.title, msg.priority )
+	      /*
 	      pushover.send( msg, function( err, result ) {
 		  if( err )
 		      log( "Battery: Error sending push notification for power failure: " + err );
 		  else
 		      log( "Battery: Successfully sent power failure push notification" );
 	      } )
+	      */
 	      // minimize screen brightness
 	  }
 	  break;
@@ -785,12 +806,15 @@ function upsCallback( oldState, newState )
 	  var msg = { "message": "Battery power critical at " +secrets.houseName + " alarm. Shutting down alarm.",
 		      "title" :"Battery power critical, Alarm system shutting down",
 		      "priority" : 1 };
+    notifications.notify( msg.message, msg.title, msg.priority )
+    /*
 	  pushover.send( msg, function( err, result ) {
 		  if( err )
 		      log( "Battery: Error sending push notification for critical power failure: " + err );
 		  else
 		      log( "Battery: Successfully sent battery power critical push notification" );
 	      } )
+*/
 	  // TODO: shutdown
 	  break;
 

@@ -183,7 +183,7 @@ function getLocationAndWeather()
 {
     var url = "http://hallen.local/location";
 
-    fetch( url )
+    fetch( url, { mode: "cors" } )
 	.then( function( response ) {
 	    return response.json();
 	} )
