@@ -1,6 +1,7 @@
 [Unit]
 Description=Home Panel Service
 After=network.target
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Service]
 WorkingDirectory=/home/pi/src/homePanel

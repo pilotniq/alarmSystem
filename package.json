@@ -20,9 +20,10 @@
     "max17048": "^1.0.1",
     "moment": "^2.22.2",
     "morgan": "~1.9.0",
+    "mqtt": "^2.18.8",
     "node-fetch": "^2.3.0",
     "onoff": "^3.2.2",
-    "pug": "2.0.0-beta11",
+    "pug": "^2.0.3",
     "pushover-notifications": "^1.2.0",
     "request": "^2.88.0",
     "semaphore": "^1.1.0"

@@ -1,10 +1,11 @@
 var ws;
 var armCountdownTimer, disarmCountdownTimer;
 var myLocation;
+var powerGauge;
 
 function reconnect()
 {
-    ws = new WebSocket('ws://hallen.local/websocket')
+    ws = new WebSocket('ws://hallen.local:8080/websocket')
     
     console.log( "Reconnecting..." );
     
@@ -22,9 +23,16 @@ function reconnect()
             case 'stateChange':
               setState( msg.state );
               state = msg.state;
-            
               break;
+	    
+	    case 'power':
+	      powerGauge.refresh( msg.power );
+	      break;
 
+	    case 'temperature':
+              document.getElementById("temperature").innerHTML = msg.temperature;
+	      break;
+	      
             default:
               console.log( "ERROR: Unknown message type " + msg.type );
         }
@@ -37,6 +45,17 @@ function reconnect()
         reconnect();
         // var ws = new WebSocket('ws://hallen.local/websocket')
     };
+}
+
+function initHomePanel()
+{
+      powerGauge = new JustGage({
+      id: "powerGauge",
+      value: 275,
+      min: 0,
+      max: 9000,
+      label: "Effekt [W]"
+      });
 }
 
 function setState( newState )
@@ -179,9 +198,12 @@ function arm()
 	  pinElement.innerHTML = pinText;
       }
 
+var GETWEATHER_INTERVAL_MINUTES = 10;
+
 function getLocationAndWeather()
 {
-    var url = "http://hallen.local/location";
+//    var url = "http://hallen.local:8080/location";
+    var url = "location";
 
     fetch( url, { mode: "cors" } )
 	.then( function( response ) {
@@ -205,8 +227,8 @@ function getWeather()
 	    var temperature, windDirection, windSpeed, symbol
 	    var currentToTime, currentForecastToTime
 	    var forecast, forecastCounter = 0
-			
-	    // Typical action to be performed when the document is ready:
+
+	      // Typical action to be performed when the document is ready:
 	    weather = xhttp.responseXML
 
 	    // delete forecast symbols
@@ -288,7 +310,7 @@ function getWeather()
                 //  break;
    	        if( "temperature" in forecast && "windSpeed" in forecast && "windDirection" in forecast && "symbol" in forecast )
 	        {		    
-                  document.getElementById("temperature").innerHTML = forecast.temperature
+                  // document.getElementById("temperature").innerHTML = forecast.temperature
 	          document.getElementById("windSpeed").innerHTML = forecast.windSpeed
 	          document.getElementById("windDirection").innerHTML = forecast.windDirection
 
@@ -302,7 +324,7 @@ function getWeather()
 	    // img.className = "weatherSymbol"
 	    // img.src = 
 	    // document.getElementById("weatherSymbol").appendChild( img )
-	    setTimeout( getWeather, 60 * 60 * 1000 ); // update weather every hour	      
+	    setTimeout( getWeather, GETWEATHER_INTERVAL_MINUTES * 60 * 1000 ); // update weather every hour	      
 	  }
 	};
 	xhttp.open("GET", url, true);

@@ -113,4 +113,4 @@ function sendMessage( msg )
 	} )
 	    }
 
-module.exports = { configure, waitForDisarm, disarmed }
+module.exports = { configure, waitForDisarm, disarmed, triggered }

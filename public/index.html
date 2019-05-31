@@ -3,10 +3,13 @@
     <link rel="stylesheet" href="styles.css">
     <title>Mästarbacken Control Panel</title>
     <script type="text/javascript" src="scripts.js"></script>
+    <script type="text/javascript" src="js/justgage-1.2.9/raphael-2.1.4.min.js"> </script>
+    <script type="text/javascript" src="js/justgage-1.2.9/justgage.js"></script>
     <script type="text/javascript">
       reconnect();
 
       getLocationAndWeather();
+
     </script>
     <style>
       ul {
@@ -100,7 +103,7 @@
 	}
     </style>
   </head>
-  <body>
+  <body onload="initHomePanel()">
     <div class="viewport-container">
       <div id="alarmTabContent" class="tabContents">
         <!-- <h1>Mästarbacken Control Panel</h1> -->
@@ -172,6 +175,7 @@
 	</ul>
       </div>
       <div id="electricityTabContent" class="tabContents">
+	<div id="powerGauge" class="200x160px" width: "200px" height: "160px"></div>
       </div>
     <footer>
       <nav>

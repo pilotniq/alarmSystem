@@ -11,6 +11,7 @@ var semaphore = require('semaphore')
 const { exec } = require('child_process');
 const {google} = require('googleapis');
 const app = express()
+const mqtt = require('mqtt');
 
 const logging = require( './logging' )
 const ups = require ('./ups')
@@ -41,7 +42,8 @@ const oauth2Client = new google.auth.OAuth2(
     "http://www.lewin.nu/oauth2callback"
 );
 
-const port = 80
+// I can't get systemd startup to allow this program to open port 80.
+const port = 8080
 
 // Initialize Pushover
 notifications.configure( secrets.pushoverUserKey, secrets.pushoverAppKey );
@@ -77,9 +79,18 @@ log( "Google Authorization URL: " + url );
 
 google.options({auth: oauth2Client});
 
-googleTokens = loadTokens()
-
-log( "googleTokens loadad: " + JSON.stringify( googleTokens ) );
+try
+{
+    googleTokens = loadTokens()
+    log( "googleTokens loadad: " + JSON.stringify( googleTokens ) );
+}
+catch( err )
+{
+    log( "Failed to load Google tokens: " + err );
+    
+    // const { googleTokens } = await oauth2Client.getToken(code).then( oauth2Client.setCredentials(tokens) );
+    // oauth2Client.setCredentials(tokens);
+}
 
 oauth2Client.on('tokens', (tokens) => {
     log( "on tokens callback." );
@@ -93,7 +104,7 @@ oauth2Client.on('tokens', (tokens) => {
     saveTokens( googleTokens );
 });
 
-if( googleTokens )
+if( Object.keys(googleTokens).length > 0 )
 {
     oauth2Client.setCredentials( googleTokens );
     oauth2Client.refreshAccessToken();
@@ -102,10 +113,13 @@ if( googleTokens )
 }
 else
 {
+    // use the auth.js program to get new codes, store them directly in tokens.json
+    googlePhotosAuthorizationCode = "XYZ";
     oauth2Client.getToken( googlePhotosAuthorizationCode ).then( function( r, err ) {
     if( err )
     {
 	log( "Error getting tokens: " + err );
+	log( JSON.stringify( err ) );
 	return;
     }
     // print tokens fields
@@ -171,6 +185,7 @@ const waitForDisarmMaxTimeSeconds = 60;
 const waitForArmTimeSeconds = 60;
 
 var nextImageTimer;
+var webSocket;
 
 const photoDifferenceUploadThreshold = 0.995
 // contains filename of previous photo taken
@@ -181,6 +196,7 @@ var compareSemaphore = semaphore(1); // at most one compare process. Want to com
 ups.startBatteryMonitoring( upsCallback )
 
 app.ws( '/websocket', function( ws, req ) {
+    webSocket = ws;
     ws.on( 'message', function( msgText ) {
 	var msg = JSON.parse( msgText );
 	switch( msg.command )
@@ -205,8 +221,57 @@ app.ws( '/websocket', function( ws, req ) {
 	}
     })
     sendStateToClient( ws, state );
-    cotnsole.log('websocket got connection');
+    console.log('websocket got connection');
 } );
+
+log( "Connecting to MQTT..." );
+var mqttClient = mqtt.connect( 'mqtt://hallen.local' );
+mqttClient.on( 'connect', mqttConnected );
+mqttClient.on( 'message', mqttMessage );
+
+function mqttConnected()
+{
+    log( "Connected to MQTT" );
+    mqttClient.subscribe( 'power', mqttSubscribed );
+    mqttClient.subscribe( 'rooms/outdoors/temperature', mqttSubscribed );
+}
+
+function mqttSubscribed( err )
+{
+    if( err )
+	log( "error subscribing to mqtt: " + err.toString() );
+}
+
+function mqttMessage( topic, message )
+{
+    log( "mqttMessage: topic='" + topic + "', message='" + message + "'" );
+
+    if( topic == "power" )
+	mqttGotPower( message )
+    else if( topic == "rooms/outdoors/temperature" )
+	mqttGotTemperature( message )
+}
+function mqttGotPower( message )
+{
+    // log( "Got power " + message );
+    msg = '{ "type": "power", "power": "' + message + '" }';
+    wsBroadcast( msg );
+/*
+    if( webSocket )
+	webSocket.send( msg );
+    else
+	log( "got power, but no websocket" );
+*/
+}
+
+function mqttGotTemperature( message )
+{
+    log( "mqttGotTemperature: message='" + message + "'" );
+
+    msg = '{ "type": "temperature", "temperature": "' + parseFloat( message ).toFixed(1) + '" }';
+    wsBroadcast( msg );
+}
+    
 app.get('/rearm', (req, res) => {
     setState( StatesEnum.armed );
     res.send('Armed.');
@@ -311,11 +376,6 @@ function setState( newState )
     }
     
     state = newState;
-    wss = expressWs.getWss();
-    clients = wss.clients;
-    log( "wss=" + wss );
-    log( "clients=" + clients );
-    log( clients.size + " clients" );
 
     switch( newState )
     {
@@ -360,12 +420,18 @@ function setState( newState )
 	  // send a message to stratus that we are in waitForDisarm mode.
 	  // then send a message again when we are disarmed.
 	  // if stratus doesn't get the second message, it sends alarm notification
-	  alarmCloud.waiForDisarm( "waitForDisarm" )
+	  alarmCloud.waitForDisarm( "waitForDisarm" )
 	  break;
 	
 	case StatesEnum.triggered:
 	  // Notify via Pushover
-	notifications.notify( "Larm på " + secrets.houseName + ". Bilder på " + secrets.albumURL, "Inbrottslarm på " + secrets.houseName, 1 )
+	  /*
+	var msg = { message = 
+		    priority: 2,
+		    expire: 10800, retry: 3 * 60 }
+	  */
+	notifications.notifyEmergency( "Larm på " + secrets.houseName + ". Bilder på " + secrets.albumURL,
+				       "Inbrottslarm på " + secrets.houseName, 10800, 120 );
 	/*
   	  pushoverRequest = { 'token': secrets.pushoverAppKey,
 			      'user': secrets.pushoverUserKey,
@@ -397,12 +463,32 @@ function setState( newState )
 	  break;
     }
 
+    var msg = '{ "type": "stateChange", "state": "' + state + '" }';
+    wsBroadcast( msg );
+    /*
     clients.forEach( function( client ) { 
-	log( "Sending state to client" );
+ 	log( "Sending state to client" );
 	sendStateToClient( client, state );
     });
+    wss = expressWs.getWss();
+    clients = wss.clients;
+    log( "wss=" + wss );
+    log( "clients=" + clients );
+    log( clients.size + " clients" );
+*/
 }
 
+function wsBroadcast( message )
+{
+    wss = expressWs.getWss();
+    clients = wss.clients;
+    // log( clients.size + " clients" );
+
+    clients.forEach( function( client ) { 
+	// log( "broadcast to clients: " + message );
+	client.send( message );
+    });
+}
 
 // called in preTrigger mode, if no additional motion has been detected within a certain time.
 function deTrigger()
@@ -739,7 +825,9 @@ function loadTokens()
 
 function saveTokens( tokens )
 {
-    fs.writeFileSync( "tokens.json", JSON.stringify( tokens ) );
+    // this is so a failed write due to disk full won't delete the tokens.
+    fs.writeFileSync( "tokens-new.json", JSON.stringify( tokens ) );
+    fs.copyFileSync( "tokens-new.json", "tokens.json" );
 }
 
 function arm()
@@ -769,7 +857,7 @@ function upsCallback( oldState, newState )
 	  {
 	      var msg = { "message": "Power returned at " + secrets.houseName + " alarm.",
 			  "title" :"Alarm system power is back." };
-	      notifications.notify( msg.message, msg.title, 2 )
+	      notifications.notifyNormal( msg.message, msg.title)
 	      /*
 	      pushover.send( msg, function( err, result ) {
 		  if( err )
@@ -788,7 +876,7 @@ function upsCallback( oldState, newState )
 	      var msg = { "message": "Power failure at " + secrets.houseName + " alarm.",
 			  "title" :"Alarm system lost power",
 			  "priority" : 1 };
-	      notifications.notify( msg.message, msg.title, msg.priority )
+	      notifications.notifyHighPriority( msg.message, msg.title )
 	      /*
 	      pushover.send( msg, function( err, result ) {
 		  if( err )
@@ -805,16 +893,9 @@ function upsCallback( oldState, newState )
 	  // TODO: Pushover notificaton
 	  var msg = { "message": "Battery power critical at " +secrets.houseName + " alarm. Shutting down alarm.",
 		      "title" :"Battery power critical, Alarm system shutting down",
-		      "priority" : 1 };
-    notifications.notify( msg.message, msg.title, msg.priority )
-    /*
-	  pushover.send( msg, function( err, result ) {
-		  if( err )
-		      log( "Battery: Error sending push notification for critical power failure: " + err );
-		  else
-		      log( "Battery: Successfully sent battery power critical push notification" );
-	      } )
-*/
+		      "priority" : 2, expire: 3600, retry: 5*60 };
+	  notifications.notifyEmergency( msg.message, msg.title, msg.expire, msg.retry )
+
 	  // TODO: shutdown
 	  break;
 

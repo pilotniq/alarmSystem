@@ -1,7 +1,7 @@
 const axios = require( 'axios' )
 const logging = require( './logging' )
 
-const ONTIME_MINUTES = 1
+const ONTIME_MINUTES = 2
 const defaultBrightness = 182
 const maxBrightness = 255
       

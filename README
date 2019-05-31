@@ -18,3 +18,7 @@ sudo systemctl start homePanel.service
 sudo systemctl restart homePanel.service
 journalctl -u homePanel
 LXDE log in /home/pi/.cache/lxsession/LXDE-pi/run.log 
+
+Allow node programs to open servers on port 80:
+
+sudo setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/node
