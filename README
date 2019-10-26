@@ -22,3 +22,17 @@ LXDE log in /home/pi/.cache/lxsession/LXDE-pi/run.log
 Allow node programs to open servers on port 80:
 
 sudo setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/node
+
+To refresh the web page from the command line:
+
+export DISPLAY=:0.0
+WID=$(xdotool search --onlyvisible --class chromium|head -1)
+xdotool windowactivate ${WID}
+xdotool key ctrl+F5
+
+Debugging:
+make sure port forwarding is set up with:
+ssh -L 0.0.0.0:9223:localhost:9222 localhost -N
+
+connect to http://172.16.2.16:9223 with chrome on another machine.
+
