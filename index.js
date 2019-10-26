@@ -29,6 +29,9 @@ const notifications = require( './notifications' )
 //   googlePhotosAlbumID
 //   houseName
 
+var currentTemperature
+var latestAlarmTime = false
+
 const secrets = JSON.parse(fs.readFileSync('secrets.json', 'utf8'));
 log( "Read secrets" );
 
@@ -156,6 +159,13 @@ else
 
 setTimeout( refreshTokens, 45 * 60 * 1000 );
 
+// set timer for clearing previous 24h of photos if no alarm has occurred.
+// do this first thing after midnight
+var now = new Date();
+// hours=23 minutes=59 will be 1
+minutesUntilMidnight = (23-now.getHours()) * 60 + (60 - now.getMinutes() );
+setTimeout( deletePhotos, minutesUntilMidnight * 60 * 1000 )
+
 app.use(express.static('public'))
 // websockets
 var expressWs = require('express-ws')(app);
@@ -187,7 +197,9 @@ const waitForArmTimeSeconds = 60;
 var nextImageTimer;
 var webSocket;
 
-const photoDifferenceUploadThreshold = 0.995
+// const photoDifferenceUploadThreshold = 0.995
+// updated 2019-08-02 because too many photos uploaded and saved.
+const photoDifferenceUploadThreshold = 0.992
 // contains filename of previous photo taken
 // will be compared against new photo. If difference is large enough, upload.
 var prevPhotoFilename
@@ -221,6 +233,7 @@ app.ws( '/websocket', function( ws, req ) {
 	}
     })
     sendStateToClient( ws, state );
+    broadcastTemperature();
     console.log('websocket got connection');
 } );
 
@@ -268,10 +281,18 @@ function mqttGotTemperature( message )
 {
     log( "mqttGotTemperature: message='" + message + "'" );
 
-    msg = '{ "type": "temperature", "temperature": "' + parseFloat( message ).toFixed(1) + '" }';
+    currentTemperature = parseFloat( message );
+
+    broadcastTemperature()
+}
+
+function broadcastTemperature()
+{
+    msg = '{ "type": "temperature", "temperature": "' + currentTemperature.toFixed(1) + '" }';
+    
     wsBroadcast( msg );
 }
-    
+
 app.get('/rearm', (req, res) => {
     setState( StatesEnum.armed );
     res.send('Armed.');
@@ -432,6 +453,8 @@ function setState( newState )
 	  */
 	notifications.notifyEmergency( "Larm på " + secrets.houseName + ". Bilder på " + secrets.albumURL,
 				       "Inbrottslarm på " + secrets.houseName, 10800, 120 );
+
+	latestAlarmTime = new Date();
 	/*
   	  pushoverRequest = { 'token': secrets.pushoverAppKey,
 			      'user': secrets.pushoverUserKey,
@@ -516,6 +539,57 @@ function sendStateToClient( client, state )
     msg = '{ "type": "stateChange", "state": "' + state + '" }';
     log( "sendStateToClient: " + msg );
     client.send( msg );
+}
+
+function deletePhotosFromDay( timestamp )
+{
+    //  var date = new Date().setTime( now.getTime() - 24 * 60 * 60 * 1000 );
+    var cmd;
+	    
+    cmd = "rm public/images/photos/" + moment( timestamp).format( "YYYYMMDD") + "*.jpg*";
+    exec( cmd, (err, stdout, stderr) => {
+	log( "Deleted files with command '" + cmd + "'" );
+	log( "err=" + err );
+	log( "stdout=" + stdout );
+	log( "stderr=" + stderr );
+    } )
+}
+function deletePhotos()
+{
+    var now = new Date();
+    
+    // delete photos from the previous day if time since latest alarm is more than 24 hours.
+    if( latestAlarmTime )
+    {
+	var timeSinceAlarm;
+	
+	minutesSinceAlarm = (now.getTime() - latestAlarmTime.getTime()) / (60 * 1000);
+	    
+	if( minutesSinceAlarm > 24 * 60 )
+	{
+	    var yesterday = new Date().setTime( now.getTime() - 24 * 60 * 60 * 1000 );
+
+	    deletePhotosFromDay( yesterday );
+/*
+	    var cmd;
+	    
+	    cmd = "rm public/images/photos/" + moment( yesterday ).format( "YYYYMMDD") + "*.jpg*";
+	    exec( cmd, (err, stdout, stderr) => {
+		log( "Deleted files with command '" + cmd + "'" );
+		log( "err=" + err );
+		log( "stdout=" + stdout );
+		log( "stderr=" + stderr );
+	    } )
+*/
+	}
+	else
+	    log( "Didn't delete images for last 24h since " + minutesSinceAlarm + " minutes since last alarm" )
+    }
+
+    // delete photos from one week ago
+    var oneMonthAgo = new Date().setTime( now.getTime() - 30 * 24 * 60 * 60 * 1000 );
+
+    deletePhotosFromDay( oneMonthAgo )
 }
 
 async function startImageCapture()
@@ -628,7 +702,10 @@ function compareAndUpload( filename, baseFilename )
 	   }
 	*/
 	difference = parseFloat( stderr );
-	log( "Image difference: " + difference );
+	if( difference == NaN )
+	    log( "image difference command '" + differenceCommand + "' returned " + stderr );
+	else
+	    log( "Image difference: " + difference );
 
 	if( difference < photoDifferenceUploadThreshold )
 	{
@@ -637,7 +714,7 @@ function compareAndUpload( filename, baseFilename )
 		prevPhotoFilename = filename});
 	}
 	else
-	    log( "Photos too similar, not uploading" );
+	    log( "Photos too similar, deleting, not uploading" );
     });
 }
 
