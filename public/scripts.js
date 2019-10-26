@@ -2,6 +2,8 @@ var ws;
 var armCountdownTimer, disarmCountdownTimer;
 var myLocation;
 var powerGauge;
+var currentTab;
+var currentTemperature;
 
 function reconnect()
 {
@@ -30,7 +32,7 @@ function reconnect()
 	      break;
 
 	    case 'temperature':
-              document.getElementById("temperature").innerHTML = msg.temperature;
+              document.getElementById("temperature").innerHTML = parseFloat(msg.temperature).toFixed(0);
 	      break;
 	      
             default:
@@ -110,6 +112,19 @@ function setState( newState )
           default:
             alert("Invalid state: " + newState );
 	}
+
+        // change tab depending on state
+        switch( newState )
+        {
+	    case "disarmed":
+	      if( !currentTab )
+	          displayTab( 'weather' );
+	      break;
+
+	    default:
+	      displayTab( 'alarm' );
+	      break;
+        }
       }
 
       function setupTimer( elementName, timeSeconds )
@@ -172,6 +187,8 @@ function arm()
 	  else
 	    buttons[i].className = "tabButton";
 	}
+
+	currentTab = tabName;
       }
 			
       function doKeypad( button )
@@ -221,115 +238,126 @@ function getWeather()
     var url = "https://api.met.no/weatherapi/locationforecast/1.9/?lat=" + myLocation.latitude + "&lon=" + myLocation.longitude +
 	"&msl=" + myLocation.altitude;
     var xhttp = new XMLHttpRequest();
-	  xhttp.onreadystatechange = function() {
-	  if (this.readyState == 4 && this.status == 200) {
-	    var product, weather
-	    var temperature, windDirection, windSpeed, symbol
-	    var currentToTime, currentForecastToTime
-	    var forecast, forecastCounter = 0
 
-	      // Typical action to be performed when the document is ready:
-	    weather = xhttp.responseXML
-
-	    // delete forecast symbols
-	    forecastNode = document.getElementById( "forecast" );
-	    while (forecastNode.firstChild) {
-	      forecastNode.removeChild(forecastNode.firstChild);
-	    }
-			
-	    console.log( "Weather: " + xhttp.responseXML );
-	    product = weather.getElementsByTagName("product")[0];
-	    for( i = 0; i < product.children.length; i++ )
+    xhttp.onreadystatechange = function() {
+	if (this.readyState == 4)
+	{
+	    try
 	    {
-	      var timeNode = product.children[i];
-			    
-              if( timeNode.tagName != "time" )
-	        continue;
-
-	      var toTime = timeNode.attributes.getNamedItem( "to" ).value
-	      console.log( "toTime;" + toTime )
-
-	      const location = timeNode.children[0];
-              if( location.tagName != "location" )
-	        continue;
-
-			    
-	     if( currentToTime && (toTime != currentToTime) )	      {
-	        // current conditions have been obtained. Create forecast blocks for the future.
-
-	        if( currentForecastToTime && (toTime != currentForecastToTime) )
-		{
-   	          var div, img, timeSpan
-		  var hours = new Date( currentForecastToTime ).getHours()
-
-		  // make block of prev forecast
-		  div = document.createElement( "li" )
-		  div.className = "forecastBlock";	    
-		  img = document.createElement( "img" )
-		  img.src = "https://api.met.no/weatherapi/weathericon/1.1/?symbol=" + forecast.symbol + "&content_type=image/svg%2Bxml"
-	          img.className = "smallWeatherSymbol"
-		    timeSpan = document.createElement( "span" );
-			    timeSpan.innerHTML = hours + ":00"
-			    br1 = document.createElement( "br" );
-			    br2 = document.createElement( "br" );
-			    tempSpan = document.createElement( "span" );
-			    tempSpan.innerHTML = forecast.temperature
-
-			    div.append( img )
-			    div.append( br1 )
-			    div.append( timeSpan )
-			    div.append( br2 )
-			    div.append( tempSpan )
-
-			    document.getElementById( "forecast" ).append( div );
-			    
-			    forecastCounter++;
-
-			    if( forecastCounter == 12 )
-			      break; // max 12 hourly forecast
-			    forecast = {}
-			      currentForecastToTime = toTime;
-               }
+		if( this.status == 200 ) {
+		    var product, weather
+		    var temperature, windDirection, windSpeed, symbol
+		    var currentToTime, currentForecastToTime
+		    var forecast, forecastCounter = 0
+		    
+		    // Typical action to be performed when the document is ready:
+		    weather = xhttp.responseXML
+		    
+		    // delete forecast symbols
+		    forecastNode = document.getElementById( "forecast" );
+		    while (forecastNode.firstChild) {
+			forecastNode.removeChild(forecastNode.firstChild);
+		    }
+		    
+		    console.log( "Weather: " + xhttp.responseXML );
+		    product = weather.getElementsByTagName("product")[0];
+		    for( i = 0; i < product.children.length; i++ )
+		    {
+			var timeNode = product.children[i];
+			
+			if( timeNode.tagName != "time" )
+			    continue;
+			
+			var toTime = timeNode.attributes.getNamedItem( "to" ).value
+			console.log( "toTime;" + toTime )
+			
+			const location = timeNode.children[0];
+			if( location.tagName != "location" )
+			    continue;
+			
+			
+			if( currentToTime && (toTime != currentToTime) )	      {
+			    // current conditions have been obtained. Create forecast blocks for the future.
+			      
+			    if( currentForecastToTime && (toTime != currentForecastToTime) )
+			    {
+   				var div, img, timeSpan
+				var hours = new Date( currentForecastToTime ).getHours()
+				
+				// make block of prev forecast
+				div = document.createElement( "li" )
+				div.className = "forecastBlock";	    
+				img = document.createElement( "img" )
+				img.src = "https://api.met.no/weatherapi/weathericon/1.1/?symbol=" + forecast.symbol + "&content_type=image/svg%2Bxml"
+				img.className = "smallWeatherSymbol"
+				timeSpan = document.createElement( "span" );
+				timeSpan.innerHTML = hours + ":00"
+				br1 = document.createElement( "br" );
+				br2 = document.createElement( "br" );
+				tempSpan = document.createElement( "span" );
+				tempSpan.innerHTML = forecast.temperature
+				  
+				div.append( img )
+				div.append( br1 )
+				div.append( timeSpan )
+				div.append( br2 )
+				div.append( tempSpan )
+				
+				document.getElementById( "forecast" ).append( div );
+				  
+				forecastCounter++;
+				  
+				if( forecastCounter == 12 )
+				    break; // max 12 hourly forecast
+				forecast = {}
+				currentForecastToTime = toTime;
+			    }
 			    if( !currentForecastToTime )  // for first time
 			    {
-			      currentForecastToTime = toTime;
-		              forecast = {}	    
+				currentForecastToTime = toTime;
+				forecast = {}	    
                             }
-		appendToForecast( forecast, location );
-	      }
-	      else
-	      {
+			    appendToForecast( forecast, location );
+			}
+			else
+			{
 			    if( !currentToTime )
 			    {
-			    currentToTime = toTime;
-			    forecast = {}
+				currentToTime = toTime;
+				forecast = {}
 			    }
  			    
-                appendToForecast( forecast, location );
-	        // if( temperature && windSpeed && windDirection && symbol )
-                //  break;
-   	        if( "temperature" in forecast && "windSpeed" in forecast && "windDirection" in forecast && "symbol" in forecast )
-	        {		    
-                  // document.getElementById("temperature").innerHTML = forecast.temperature
-	          document.getElementById("windSpeed").innerHTML = forecast.windSpeed
-	          document.getElementById("windDirection").innerHTML = forecast.windDirection
-
-	          document.getElementById("weatherSymbolImage").src = "https://api.met.no/weatherapi/weathericon/1.1/?symbol=" + forecast.symbol + "&content_type=image/svg%2Bxml"
-                }
-	      } // end of loop over location children
-                // break;
-	    } // end of loop over product children
-
-	    // img = document.createElement( "img" )
-	    // img.className = "weatherSymbol"
-	    // img.src = 
-	    // document.getElementById("weatherSymbol").appendChild( img )
-	    setTimeout( getWeather, GETWEATHER_INTERVAL_MINUTES * 60 * 1000 ); // update weather every hour	      
-	  }
-	};
-	xhttp.open("GET", url, true);
-	xhttp.send();
-      }
+			    appendToForecast( forecast, location );
+			    // if( temperature && windSpeed && windDirection && symbol )
+			    //  break;
+   			    if( "temperature" in forecast && "windSpeed" in forecast && "windDirection" in forecast && "symbol" in forecast )
+			    {		    
+				// document.getElementById("temperature").innerHTML = forecast.temperature
+				document.getElementById("windSpeed").innerHTML = forecast.windSpeed
+				document.getElementById("windDirection").innerHTML = forecast.windDirection
+				
+				document.getElementById("weatherSymbolImage").src = "https://api.met.no/weatherapi/weathericon/1.1/?symbol=" + forecast.symbol + "&content_type=image/svg%2Bxml"
+			    }
+			} // end of loop over location children
+			// break;
+		    } // end of loop over product children
+		}
+		// img = document.createElement( "img" )
+		// img.className = "weatherSymbol"
+		// img.src = 
+		// document.getElementById("weatherSymbol").appendChild( img )
+		// reset the timer regardless of whether we get a 200 or an error
+	    }
+	    finally
+	    {
+		setTimeout( getWeather, GETWEATHER_INTERVAL_MINUTES * 60 * 1000 ); // update weather every hour, regardless of error
+	    }
+	}
+	
+    };
+    xhttp.open("GET", url, true);
+    xhttp.send();
+}
 
 function appendToForecast( forecast, location )
       {
